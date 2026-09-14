@@ -86,6 +86,8 @@ python selfcheck.py фото.jpg     # на своём фото
 | `texts.py` | вся выдача бота |
 | `keyboards.py` | кнопки |
 | `selfcheck.py` | проверка картинок без Telegram |
+| `make_assets.py` | сборка заставок в `assets/` |
+| `make_avatar.py` | аватарка бота 512×512 |
 
 ## Оформление
 
