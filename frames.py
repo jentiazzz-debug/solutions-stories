@@ -223,23 +223,30 @@ SHADE = (0, 0, 0, 120)
 
 
 def _laurel(w: Wreath) -> Image.Image:
-    """Лавр: две ветви от низа вверх, листья мельчают к вершине."""
-    gold, dark, shine = (238, 202, 120), (150, 112, 38), (255, 238, 190)
-    for side in (1, -1):
-        for i in range(13):
-            t = i / 12
-            angle = math.pi / 2 - side * (0.35 + t * 2.15)
-            cx, cy = w.at(angle, w.ring * (1 - 0.02 * math.sin(t * math.pi)))
-            length = w.big * (0.105 - 0.052 * t)
-            leaf = _leaf_shape(length, length * 0.30, tilt=0.18 * side)
-            #: Лист смотрит наружу и чуть отклонён по ходу ветви — от
-            #: этого наклона венок и читается как сплетённый.
-            w.piece(leaf, angle + math.pi / 2 + side * 0.42, cx, cy,
-                    _mix(gold, dark, t * 0.55), shade=SHADE, shine=shine + (90,))
-    #: Узел внизу: две ветви должны где-то сходиться.
-    cx, cy = w.at(math.pi / 2)
-    w.draw.ellipse((cx - w.big * 0.022, cy - w.big * 0.022,
-                    cx + w.big * 0.022, cy + w.big * 0.022), fill=gold + (255,))
+    """Лавр: сплошная лента листьев в два слоя.
+
+    Плотность здесь важнее рисунка отдельного листа. Пока между
+    элементами есть зазор, глаз видит ряд значков; как только соседи
+    перекрываются, лента читается одним предметом — венком.
+    """
+    gold, dark, shine = (240, 206, 126), (128, 94, 30), (255, 242, 200)
+    count = 46
+    for layer in (0, 1):
+        back = layer == 0
+        radius = w.ring * (1.055 if back else 0.985)
+        scale = 0.86 if back else 1.0
+        #: Задний слой сдвинут на полшага — стыки переднего ряда
+        #: закрываются, и просветов в ленте не остаётся.
+        shift = math.pi / count if back else 0.0
+        for i in range(count):
+            angle = i * math.tau / count + shift
+            cx, cy = w.at(angle, radius)
+            length = w.big * 0.098 * scale
+            leaf = _leaf_shape(length, length * 0.27, tilt=0.16)
+            colour = _mix(gold, dark, 0.62 if back else 0.10)
+            w.piece(leaf, angle + math.pi / 2 + 0.46, cx, cy, colour + (255,),
+                    shade=None if back else SHADE,
+                    shine=None if back else shine + (95,))
     return w.finish()
 
 
@@ -266,16 +273,18 @@ def _chain(w: Wreath) -> Image.Image:
     яркостью читаются как круглый металлический пруток.
     """
     steel, dark = (232, 236, 246), (92, 98, 114)
-    count = 16
-    tube = w.big * 0.0085
+    #: 16 звеньев при этом радиусе стояли с просветами — цепь
+    #: рассыпалась на отдельные колечки.
+    count = 26
+    tube = w.big * 0.0080
     for i in range(count):
         angle = i * math.tau / count
         #: Нечётные звенья чуть ближе к центру — тогда соседние
         #: перекрываются, и цепь перестаёт быть рядом отдельных колец.
         cx, cy = w.at(angle, w.ring * (1.0 if i % 2 == 0 else 0.972))
         flat = i % 2 == 0
-        rx = w.big * (0.040 if flat else 0.024)
-        ry = w.big * (0.024 if flat else 0.040)
+        rx = w.big * (0.046 if flat else 0.027)
+        ry = w.big * (0.027 if flat else 0.046)
         spin = angle + math.pi / 2
         cos_s, sin_s = math.cos(spin), math.sin(spin)
         for k in range(40):
@@ -295,8 +304,8 @@ def _chain(w: Wreath) -> Image.Image:
 def _flame(w: Wreath) -> Image.Image:
     """Пламя: языки снизу, выше — короче и бледнее, всё в свечении."""
     rng = random.Random(3)
-    for i in range(34):
-        t = i / 33
+    for i in range(52):
+        t = i / 51
         #: Языки гуще внизу: пламя не окружает голову равномерно.
         angle = math.pi / 2 + (t - 0.5) * math.tau * 0.88
         spread = abs(math.sin(angle))
@@ -317,61 +326,62 @@ def _flame(w: Wreath) -> Image.Image:
 
 def _sakura(w: Wreath) -> Image.Image:
     """Сакура: три грозди разного размера, между ними — редкие цветки."""
-    pink, deep, heart = (255, 214, 226), (226, 108, 150), (255, 226, 130)
+    pink, deep, heart = (255, 216, 228), (222, 100, 146), (255, 226, 130)
     rng = random.Random(7)
-    spots: list[tuple[float, float]] = []
-    for base, count, scale in ((-1.25, 6, 1.0), (0.55, 5, 0.82), (2.55, 4, 0.66)):
+    #: Сомкнутая лента цветов: 22 штуки при таком размере лепестка
+    #: перекрываются, и венок становится венком. Размер всё равно гуляет
+    #: — ровные одинаковые цветы выглядят штампом.
+    count = 22
+    for layer in (0, 1):
+        back = layer == 0
         for i in range(count):
-            spots.append((base + (i - count / 2) * 0.24, scale * (0.78 + 0.32 * rng.random())))
-    for i in range(7):
-        spots.append((i * math.tau / 7 + 0.3, 0.42 + 0.14 * rng.random()))
-
-    for angle, scale in spots:
-        cx, cy = w.at(angle, w.ring * (0.97 + 0.06 * rng.random()))
-        petal_len = w.big * 0.050 * scale
-        for k in range(5):
-            spin = angle + k * math.tau / 5 + rng.random() * 0.12
-            w.piece(_petal_shape(petal_len, petal_len * 0.46), spin, cx, cy,
-                    _mix(pink, deep, 0.18 + 0.5 * rng.random()) + (250,), shade=SHADE)
-        r = petal_len * 0.20
-        w.draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=heart + (255,))
+            angle = (i + (0.5 if back else 0.0)) * math.tau / count
+            cx, cy = w.at(angle, w.ring * (1.055 if back else 0.98))
+            petal_len = w.big * (0.044 if back else 0.056) * rng.uniform(0.86, 1.14)
+            for k in range(5):
+                spin = angle + k * math.tau / 5 + rng.uniform(-0.1, 0.1)
+                w.piece(_petal_shape(petal_len, petal_len * 0.48), spin, cx, cy,
+                        _mix(pink, deep, (0.55 if back else 0.12) + 0.3 * rng.random()) + (250,),
+                        shade=None if back else SHADE)
+            if not back:
+                r = petal_len * 0.22
+                w.draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=heart + (255,))
     return w.finish()
 
 
 def _stardust(w: Wreath) -> Image.Image:
     """Звёздная пыль: крупные искры сгущаются к правому верху."""
     rng = random.Random(21)
-    for i in range(120):
-        angle = rng.uniform(0, math.tau)
-        #: Вес к верхне-правому сектору: равномерная россыпь выглядит
-        #: как рамка из ворда, сгущение — как свет из точки.
-        weight = 0.30 + 0.70 * max(0.0, math.cos(angle + math.pi / 4))
-        if rng.random() > weight:
-            continue
-        radius = w.ring * rng.uniform(0.90, 1.12)
-        cx, cy = w.at(angle, radius)
-        #: Крупные искры обязательны: из одной мелочи получается пыль на
-        #: объективе, а не украшение.
-        outer = w.big * rng.uniform(0.030, 0.085) * (0.45 + 0.55 * weight)
-        w.piece(_star_shape(outer, outer * 0.15), rng.uniform(0, 1.5), cx, cy,
-                (255, 255, 255, 250), glow=(150, 220, 255, 190))
+    #: Сомкнутое кольцо из трёх рядов, а не россыпь по площади. Россыпь
+    #: и была тем самым «накиданными символами»: у неё нет края, поэтому
+    #: она не читается как рамка.
+    for radius_mul, count, lo, hi in ((1.075, 26, 0.020, 0.034),
+                                      (1.0, 22, 0.038, 0.062),
+                                      (0.935, 26, 0.018, 0.030)):
+        for i in range(count):
+            angle = i * math.tau / count + rng.uniform(-0.04, 0.04)
+            cx, cy = w.at(angle, w.ring * radius_mul * rng.uniform(0.985, 1.015))
+            outer = w.big * rng.uniform(lo, hi)
+            w.piece(_star_shape(outer, outer * 0.15), rng.uniform(0, 1.5), cx, cy,
+                    (255, 255, 255, 250), glow=(150, 220, 255, 170))
     return w.finish()
 
 
 def _thorns(w: Wreath) -> Image.Image:
     """Терновник: изогнутые шипы, каждый со светлой кромкой."""
     dark, edge = (38, 22, 48), (150, 96, 190)
-    count = 26
+    #: Плотный частокол: шипы должны касаться основаниями.
+    count = 66
     for i in range(count):
         angle = i * math.tau / count
-        cx, cy = w.at(angle, w.ring * 0.98)
+        cx, cy = w.at(angle, w.ring * (1.03 if i % 2 else 0.97))
         long_one = i % 3 == 0
         length = w.big * (0.105 if long_one else 0.062)
         bend = 0.30 if i % 2 else -0.30
-        spike = [(0, -length), (w.big * 0.016, -length * 0.25),
+        spike = [(0, -length), (w.big * 0.021, -length * 0.25),
                  (w.big * 0.010 + bend * w.big * 0.02, length * 0.16),
                  (-w.big * 0.010 + bend * w.big * 0.02, length * 0.16),
-                 (-w.big * 0.016, -length * 0.25)]
+                 (-w.big * 0.021, -length * 0.25)]
         w.piece(spike, angle + math.pi / 2 + bend * 0.5, cx, cy, dark + (255,),
                 shade=SHADE, shine=edge + (120,))
     return w.finish()
@@ -379,21 +389,23 @@ def _thorns(w: Wreath) -> Image.Image:
 
 def _pearls(w: Wreath) -> Image.Image:
     """Жемчуг: крупные и мелкие вперемешку, у каждой бусины блик."""
-    base, deep = (255, 252, 248), (176, 170, 186)
-    count = 30
-    for i in range(count):
-        angle = i * math.tau / count
-        big_one = i % 3 == 0
-        r = w.big * (0.030 if big_one else 0.018)
-        cx, cy = w.at(angle, w.ring * (1.0 if big_one else 0.985))
-        w.sdraw.ellipse((cx - r + w.big * 0.005, cy - r + w.big * 0.005,
-                         cx + r + w.big * 0.005, cy + r + w.big * 0.005), fill=SHADE)
-        w.draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=_mix(base, deep, 0.28) + (255,))
-        #: Блик смещён в одну сторону у всех бусин — иначе свет
-        #: выглядит приходящим отовсюду, и объём пропадает.
-        hr = r * 0.34
-        hx, hy = cx - r * 0.34, cy - r * 0.36
-        w.draw.ellipse((hx - hr, hy - hr, hx + hr, hy + hr), fill=(255, 255, 255, 235))
+    base, deep = (255, 252, 248), (168, 162, 180)
+    #: Два сомкнутых ряда: нижний виден в просветах верхнего, поэтому
+    #: нитка выглядит нитью, а не пунктиром из точек.
+    for radius_mul, r_mul, count, shift in ((1.050, 0.020, 34, 0.5), (0.985, 0.027, 30, 0.0)):
+        for i in range(count):
+            angle = (i + shift) * math.tau / count
+            r = w.big * r_mul
+            cx, cy = w.at(angle, w.ring * radius_mul)
+            w.sdraw.ellipse((cx - r + w.big * 0.005, cy - r + w.big * 0.005,
+                             cx + r + w.big * 0.005, cy + r + w.big * 0.005), fill=SHADE)
+            w.draw.ellipse((cx - r, cy - r, cx + r, cy + r),
+                           fill=_mix(base, deep, 0.50 if r_mul < 0.024 else 0.18) + (255,))
+            #: Блик смещён в одну сторону у всех бусин — иначе свет
+            #: выглядит приходящим отовсюду, и объём пропадает.
+            hr = r * 0.34
+            hx, hy = cx - r * 0.34, cy - r * 0.36
+            w.draw.ellipse((hx - hr, hy - hr, hx + hr, hy + hr), fill=(255, 255, 255, 230))
     return w.finish()
 
 
@@ -401,8 +413,8 @@ def _ice(w: Wreath) -> Image.Image:
     """Лёд: осколки разной длины, полупрозрачные, с белой кромкой."""
     rng = random.Random(4)
     tint = (196, 238, 255)
-    for i in range(20):
-        angle = i * math.tau / 20 + rng.uniform(-0.06, 0.06)
+    for i in range(34):
+        angle = i * math.tau / 34 + rng.uniform(-0.05, 0.05)
         cx, cy = w.at(angle, w.ring * 0.99)
         length = w.big * rng.uniform(0.055, 0.115)
         shard = _shard_shape(length, w.big * 0.022)
@@ -414,15 +426,19 @@ def _ice(w: Wreath) -> Image.Image:
 def _hearts(w: Wreath) -> Image.Image:
     """Сердца: гроздь слева внизу и редкая россыпь по остальному кругу."""
     rng = random.Random(11)
-    warm, deep = (255, 120, 158), (196, 28, 84)
-    spots = [(2.05 + (i - 3) * 0.26, 0.85 + 0.45 * rng.random()) for i in range(7)]
-    spots += [(i * math.tau / 9 + 0.7, 0.42 + 0.2 * rng.random()) for i in range(9)]
-    for angle, scale in spots:
-        cx, cy = w.at(angle, w.ring * (0.96 + 0.08 * rng.random()))
-        r = w.big * 0.042 * scale
-        w.piece(_heart_shape(r), angle + math.pi / 2 + rng.uniform(-0.3, 0.3), cx, cy,
-                _mix(warm, deep, rng.random() * 0.6) + (250,),
-                shade=SHADE, shine=(255, 220, 232, 130), glow=(255, 90, 140, 90))
+    warm, deep = (255, 126, 162), (188, 24, 80)
+    for layer in (0, 1):
+        back = layer == 0
+        count = 26
+        for i in range(count):
+            angle = (i + (0.5 if back else 0.0)) * math.tau / count
+            cx, cy = w.at(angle, w.ring * (1.055 if back else 0.98))
+            r = w.big * (0.036 if back else 0.048) * rng.uniform(0.88, 1.12)
+            w.piece(_heart_shape(r), angle + math.pi / 2 + rng.uniform(-0.18, 0.18), cx, cy,
+                    _mix(warm, deep, (0.62 if back else 0.10) + 0.25 * rng.random()) + (250,),
+                    shade=None if back else SHADE,
+                    shine=None if back else (255, 220, 232, 130),
+                    glow=(255, 90, 140, 70))
     return w.finish()
 
 

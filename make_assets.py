@@ -449,15 +449,25 @@ def footer(card: Image.Image, text: str = HANDLE) -> None:
     )
 
 
-def chip(draw: ImageDraw.ImageDraw, box, title: str, lines: list[str]) -> None:
-    """Скруглённая плашка с заголовком и строками."""
+def chip(draw: ImageDraw.ImageDraw, box, title: str, lines: list[str]) -> int:
+    """Скруглённая плашка с заголовком и строками.
+
+    Высота считается от содержимого, а не задаётся руками: заданная
+    руками уже дважды оказывалась короче текста, и последние строки
+    уезжали на градиент под плашкой. Четвёртый элемент box теперь
+    только минимум высоты.
+    """
     x0, y0, x1, y1 = box
-    draw.rounded_rectangle(box, radius=RADIUS, fill=PLATE + (PLATE_ALPHA,))
+    top_pad, line_step, bottom_pad = 88, 46, 30
+    needed = top_pad + line_step * len(lines) + bottom_pad
+    bottom = max(y1, y0 + needed)
+    draw.rounded_rectangle((x0, y0, x1, bottom), radius=RADIUS, fill=PLATE + (PLATE_ALPHA,))
     draw.text((x0 + 34, y0 + 28), title, font=font(34), fill=ACCENT)
-    y = y0 + 88
+    y = y0 + top_pad
     for line in lines:
         draw.text((x0 + 34, y), line, font=font(31), fill=INK)
-        y += 46
+        y += line_step
+    return int(bottom)
 
 
 def title_plate(draw: ImageDraw.ImageDraw, text: str, top: int = 56, size: int = 54) -> int:
@@ -692,11 +702,10 @@ def make_frames(source: bytes) -> Image.Image:
         card.paste(shot, (start_x + i * (size + gap), row_y))
 
     chip(
-        draw, (60, 1058, W - 60, 1216), "Как это работает",
+        draw, (60, 1050, W - 60, 1050), "Как это работает",
         [
             f"{frames_mod.frame_count()} рамок × {len(frames_mod.COLORS)} фонов, включая подарочные.",
-            "Фон под рамкой — фон твоего профиля,",
-            "поэтому она выглядит частью интерфейса.",
+            "Фон под рамкой — тот, что стоит у тебя в профиле.",
         ],
     )
     footer(card)
