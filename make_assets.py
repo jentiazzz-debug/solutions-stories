@@ -30,12 +30,26 @@ OUT = Path(__file__).resolve().parent / "assets"
 
 W, H = 1080, 1350
 
-INK = (236, 240, 248)
-DIM = (150, 162, 184)
-BG_TOP, BG_BOTTOM = (18, 22, 34), (10, 13, 22)
-ACCENT = (64, 190, 255)
+INK = (255, 255, 255)
+DIM = (198, 226, 232)
+
+#: Бирюзовая диагональ вместо почти-чёрного фона. На тёмной подложке
+#: тёмные плашки не читаются, и карточка выглядит пустой: контраст даёт
+#: не текст, а перепад между светлым фоном и тёмной плашкой.
+BG_STOPS = ((10, 40, 48), (26, 104, 120), (150, 219, 228))
+
+#: Плашки почти непрозрачные: полупрозрачные на градиенте плывут по
+#: тону, и один и тот же блок выглядит по-разному сверху и снизу.
+PLATE = (17, 33, 43)
+PLATE_ALPHA = 232
+RADIUS = 34
+ACCENT = (126, 230, 245)
 
 BRAND = "Solutions Stories"
+
+#: Чей профиль показываем на витрине. Живой юзернейм вместо названия
+#: бота: человек должен увидеть чужой настоящий профиль, а не макет.
+OWNER = "@nudick"
 HANDLE = "@SolutionsStoriesbot"
 
 _FONTS = (
@@ -62,19 +76,26 @@ def font(size: int) -> ImageFont.FreeTypeFont:
 
 
 def backdrop(width: int = W, height: int = H) -> Image.Image:
-    """Тёмный фон с парой цветных пятен — чтобы карточка не была плоской."""
-    base = Image.new("RGB", (width, height), BG_BOTTOM)
-    px = base.load()
-    for y in range(height):
-        t = y / (height - 1)
-        row = tuple(round(BG_TOP[i] + (BG_BOTTOM[i] - BG_TOP[i]) * t) for i in range(3))
-        for x in range(width):
-            px[x, y] = row  # type: ignore[index]
+    """Диагональный бирюзовый градиент: тёмный угол сверху, свет снизу."""
+    small = Image.new("RGB", (64, 64))
+    px = small.load()
+    for y in range(64):
+        for x in range(64):
+            #: Диагональ, а не вертикаль: свет приходит из угла, и
+            #: плашки ложатся на неоднородный фон — так карточка
+            #: выглядит снятой, а не залитой.
+            t = (x / 63) * 0.42 + (y / 63) * 0.58
+            t = min(max(t, 0.0), 1.0) * (len(BG_STOPS) - 1)
+            i = min(int(t), len(BG_STOPS) - 2)
+            f = t - i
+            a, b = BG_STOPS[i], BG_STOPS[i + 1]
+            px[x, y] = tuple(round(a[k] + (b[k] - a[k]) * f) for k in range(3))  # type: ignore[index]
+    base = small.resize((width, height), Image.BICUBIC)
     glow = Image.new("RGB", (width, height), (0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.ellipse((-width * 0.3, -height * 0.15, width * 0.55, height * 0.35), fill=(20, 70, 120))
-    gd.ellipse((width * 0.55, height * 0.66, width * 1.35, height * 1.2), fill=(80, 30, 110))
-    return Image.blend(base, glow.filter(ImageFilter.GaussianBlur(190)), 0.55)
+    ImageDraw.Draw(glow).ellipse(
+        (width * 0.1, height * 0.42, width * 1.1, height * 1.25), fill=(120, 210, 225)
+    )
+    return Image.blend(base, glow.filter(ImageFilter.GaussianBlur(210)), 0.35)
 
 
 def demo_source(width: int = 1400, height: int = 1750) -> bytes:
@@ -117,14 +138,15 @@ def demo_source(width: int = 1400, height: int = 1750) -> bytes:
     return buf.getvalue()
 
 
-def wall_grid(source: bytes, parts: int, box_w: int, gap: int) -> Image.Image:
+def wall_grid(source: bytes, parts: int, box_w: int, gap: int,
+              seam: tuple[int, int, int] = (12, 14, 22)) -> Image.Image:
     """Сетка превью ровно так, как её покажет профиль."""
     rows = slicer.LAYOUTS[parts]
     cell_w = (box_w - gap * (slicer.COLS - 1)) // slicer.COLS
     cell_h = round(cell_w * slicer.CELL_H / slicer.CELL_W)
     with Image.open(io.BytesIO(source)) as src:
         board = slicer._cover(src.convert("RGB"), cell_w * slicer.COLS, cell_h * rows)
-    grid = Image.new("RGB", (box_w, cell_h * rows + gap * (rows - 1)), (12, 14, 22))
+    grid = Image.new("RGB", (box_w, cell_h * rows + gap * (rows - 1)), seam)
     for row in range(rows):
         for col in range(slicer.COLS):
             tile = board.crop(
@@ -196,12 +218,27 @@ def footer(card: Image.Image, text: str = HANDLE) -> None:
 def chip(draw: ImageDraw.ImageDraw, box, title: str, lines: list[str]) -> None:
     """Скруглённая плашка с заголовком и строками."""
     x0, y0, x1, y1 = box
-    draw.rounded_rectangle(box, radius=28, fill=(255, 255, 255, 16))
-    draw.text((x0 + 30, y0 + 26), title, font=font(34), fill=ACCENT)
-    y = y0 + 84
+    draw.rounded_rectangle(box, radius=RADIUS, fill=PLATE + (PLATE_ALPHA,))
+    draw.text((x0 + 34, y0 + 28), title, font=font(34), fill=ACCENT)
+    y = y0 + 88
     for line in lines:
-        draw.text((x0 + 30, y), line, font=font(31), fill=INK)
+        draw.text((x0 + 34, y), line, font=font(31), fill=INK)
         y += 46
+
+
+def title_plate(draw: ImageDraw.ImageDraw, text: str, top: int = 56, size: int = 54) -> int:
+    """Заголовок в отдельной тёмной пилюле по центру, как у конкурента.
+
+    Текст прямо на градиенте читается плохо: сверху фон тёмный, снизу
+    светлый, и одна и та же белая строка где-то тонет, где-то слепит.
+    """
+    face = font(size)
+    width = draw.textlength(text, font=face)
+    pad_x, pad_y = 44, 26
+    box = ((W - width) / 2 - pad_x, top, (W + width) / 2 + pad_x, top + size + pad_y * 2)
+    draw.rounded_rectangle(box, radius=RADIUS, fill=PLATE + (PLATE_ALPHA,))
+    draw.text((W / 2, top + (size + pad_y * 2) / 2), text, font=face, fill=INK, anchor="mm")
+    return int(box[3])
 
 
 # --------------------------------------------------------------------------
@@ -212,38 +249,43 @@ def chip(draw: ImageDraw.ImageDraw, box, title: str, lines: list[str]) -> None:
 def make_manual(source: bytes) -> Image.Image:
     card = backdrop()
     draw = ImageDraw.Draw(card, "RGBA")
-    draw.text((W / 2, 92), "Как подобрать размер фото", font=font(56), fill=INK, anchor="mm")
+    bottom = title_plate(draw, "Как подобрать размер фото")
 
     ratios = []
     for parts in sorted(slicer.LAYOUTS):
         w, h = slicer.ideal_ratio(parts)
         ratios.append(f"{w}:{h}   →   {parts} сторис")
-    chip(draw, (60, 150, W // 2 - 16, 440), "Идеальные пропорции", ratios)
+    top = bottom + 28
+    chip(draw, (60, top, W // 2 - 14, top + 292), "Идеальные пропорции", ratios)
     chip(
-        draw, (W // 2 + 16, 150, W - 60, 440), "Почему так",
+        draw, (W // 2 + 14, top, W - 60, top + 292), "Почему так",
         ["В профиле три колонки,", "а в превью видно только", "середину кадра —", "окно 4:5."],
     )
 
-    #: Ширина сетки подобрана так, чтобы три ряда 4:5 закончились выше
-    #: плашки «Важно»: при 470 px последний ряд налезал на неё.
-    grid_w, grid_x, grid_y = 420, 60, 492
-    grid = wall_grid(source, 9, grid_w, 10)
+    #: Сетку кладём как у конкурента: тонкие белые швы и крупные белые
+    #: цифры прямо на снимке, без тёмных кружков — кружки съедают кадр и
+    #: превращают демонстрацию в схему.
+    grid_w, grid_x = 420, 60
+    grid_y = top + 330
+    grid = wall_grid(source, 9, grid_w, 6, seam=(255, 255, 255))
     card.paste(grid, (grid_x, grid_y))
     gdraw = ImageDraw.Draw(card, "RGBA")
-    cell = (grid_w - 20) // 3
+    cell = (grid_w - 12) // 3
     cell_h = round(cell * slicer.CELL_H / slicer.CELL_W)
     number = 9
     for row in range(3):
         for col in range(3):
-            cx = grid_x + col * (cell + 10) + cell / 2
-            cy = grid_y + row * (cell_h + 10) + cell_h / 2
-            gdraw.ellipse((cx - 36, cy - 36, cx + 36, cy + 36), fill=(0, 0, 0, 175))
-            gdraw.text((cx, cy), str(number), font=font(44), fill=INK, anchor="mm")
+            cx = grid_x + col * (cell + 6) + cell / 2
+            cy = grid_y + row * (cell_h + 6) + cell_h / 2
+            gdraw.text((cx + 2, cy + 2), str(number), font=font(52),
+                       fill=(0, 0, 0, 150), anchor="mm")
+            gdraw.text((cx, cy), str(number), font=font(52), fill=INK, anchor="mm")
             number -= 1
 
+    grid_bottom = grid_y + cell_h * 3 + 12
     chip(
         ImageDraw.Draw(card, "RGBA"),
-        (520, 500, W - 60, 1000),
+        (520, grid_y, W - 60, grid_bottom),
         "Последовательность",
         [
             "Публикуй файлы подряд,",
@@ -257,11 +299,14 @@ def make_manual(source: bytes) -> Image.Image:
             "верхний.",
         ],
     )
+
     draw = ImageDraw.Draw(card, "RGBA")
-    draw.rounded_rectangle((60, 1040, W - 60, 1215), radius=28, fill=(255, 180, 60, 30))
-    draw.text((90, 1068), "Важно", font=font(34), fill=(255, 196, 92))
+    warn_top = grid_bottom + 26
+    draw.rounded_rectangle((60, warn_top, W - 60, warn_top + 156), radius=RADIUS,
+                           fill=(74, 46, 12, 236))
+    draw.text((94, warn_top + 24), "Важно", font=font(34), fill=(255, 196, 92))
     draw.text(
-        (90, 1118),
+        (94, warn_top + 74),
         f"Фото меньше {slicer.MIN_SIDE} px по короткой стороне\n"
         "на 12–15 частей бот растянет — будет мылить.",
         font=font(31), fill=INK,
@@ -272,17 +317,25 @@ def make_manual(source: bytes) -> Image.Image:
 
 def make_welcome(source: bytes) -> Image.Image:
     card = backdrop()
-    screen = profile_screen(source, 9, 430, BRAND)
+    draw = ImageDraw.Draw(card, "RGBA")
+    title_plate(draw, "Стенка из сторис", top=44, size=58)
+
+    screen = profile_screen(source, 9, 430, OWNER)
     shell = phone(screen)
-    shell = shell.resize((round(shell.width * 0.96), round(shell.height * 0.96)), Image.LANCZOS)
-    card.paste(shell, ((W - shell.width) // 2, 150), shell)
+    shell = shell.resize((round(shell.width * 0.94), round(shell.height * 0.94)), Image.LANCZOS)
+    card.paste(shell, ((W - shell.width) // 2, 196), shell)
 
     draw = ImageDraw.Draw(card, "RGBA")
-    draw.text((W / 2, 76), "Стенка из сторис", font=font(62), fill=INK, anchor="mm")
-    draw.text(
-        (W / 2, H - 108), "Одна картинка — целый профиль",
-        font=font(38), fill=DIM, anchor="mm",
+    #: Подпись в плашке, а не поверх градиента: внизу фон самый светлый,
+    #: и белый текст на нём исчезает.
+    face = font(38)
+    text = "Одна картинка — целый профиль"
+    width = draw.textlength(text, font=face)
+    draw.rounded_rectangle(
+        ((W - width) / 2 - 38, H - 158, (W + width) / 2 + 38, H - 84),
+        radius=RADIUS, fill=PLATE + (PLATE_ALPHA,),
     )
+    draw.text((W / 2, H - 121), text, font=face, fill=INK, anchor="mm")
     footer(card)
     return card
 
@@ -290,7 +343,7 @@ def make_welcome(source: bytes) -> Image.Image:
 def make_about(source: bytes) -> Image.Image:
     card = backdrop()
     draw = ImageDraw.Draw(card, "RGBA")
-    draw.text((W / 2, 84), "Было / стало", font=font(56), fill=INK, anchor="mm")
+    title_plate(draw, "Было / стало")
 
     plain = Image.new("RGB", (430, round(430 * 2.06)), (14, 16, 24))
     pdraw = ImageDraw.Draw(plain)
@@ -301,7 +354,7 @@ def make_about(source: bytes) -> Image.Image:
         fill=(46, 52, 66),
     )
     pdraw.text((215, round(430 * 0.12) + avatar_d + 32), "обычный профиль",
-               font=font(30), fill=DIM, anchor="mm")
+               font=font(30), fill=(150, 162, 184), anchor="mm")
     gap, box = 5, 420
     cell = (box - gap * 2) // 3
     cell_h = round(cell * slicer.CELL_H / slicer.CELL_W)
@@ -316,52 +369,108 @@ def make_about(source: bytes) -> Image.Image:
             )
 
     shells = []
-    for inner in (plain, profile_screen(source, 9, 430, BRAND)):
+    for inner in (plain, profile_screen(source, 9, 430, OWNER)):
         shell = phone(inner)
         shells.append(
-            shell.resize((round(shell.width * 0.78), round(shell.height * 0.78)), Image.LANCZOS)
+            shell.resize((round(shell.width * 0.74), round(shell.height * 0.74)), Image.LANCZOS)
         )
-    span = shells[0].width * 2 + 80
+    span = shells[0].width * 2 + 76
     for index, shell in enumerate(shells):
-        card.paste(shell, ((W - span) // 2 + index * (shell.width + 80), 190), shell)
+        card.paste(shell, ((W - span) // 2 + index * (shell.width + 76), 208), shell)
 
-    draw.text(
-        (W / 2, 1010),
-        "Сетка профиля складывает истории\nв одно полотно — если нарезать правильно",
-        font=font(38), fill=INK, anchor="mm", align="center",
-    )
-    draw.text(
-        (W / 2, 1130),
-        "Порядок публикации бот берёт на себя",
-        font=font(32), fill=DIM, anchor="mm",
+    draw = ImageDraw.Draw(card, "RGBA")
+    chip(
+        draw, (60, 1000, W - 60, 1216), "Что меняется",
+        [
+            "Сетка профиля складывает истории",
+            "в одно полотно — если нарезать",
+            "правильно. Порядок публикации",
+            "бот берёт на себя.",
+        ],
     )
     footer(card)
     return card
 
 
+def profile_card(avatar_src: bytes, frame_index: int, colour_index: int,
+                 name: str, width: int, height: int) -> Image.Image:
+    """Карточка профиля Telegram: узор, аватарка с рамкой, имя, статус.
+
+    Именно так рамку показывает конкурент — и это честно: человек видит
+    не рамку саму по себе, а то, как она сядет в его профиль.
+    """
+    plate = Image.new("RGB", (width, height))
+    px = plate.load()
+    for y in range(height):
+        for x in range(width):
+            t = (x / width) * 0.4 + (y / height) * 0.6
+            px[x, y] = (  # type: ignore[index]
+                round(74 + 84 * t), round(170 + 46 * t), round(206 + 30 * t),
+            )
+    pat = ImageDraw.Draw(plate, "RGBA")
+    #: Редкие светлые пятна вместо фирменного узора Telegram: рисовать
+    #: чужие иконки в собственную рекламу нечестно, а фактура нужна —
+    #: на голой заливке карточка выглядит плашкой, а не интерфейсом.
+    for i in range(46):
+        angle = i * 2.399
+        cx = width * (0.5 + 0.46 * math.cos(angle * 3.1) * ((i % 7) / 7 + 0.3))
+        cy = height * (0.5 + 0.46 * math.sin(angle * 2.3) * ((i % 5) / 5 + 0.3))
+        r = width * 0.018
+        pat.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(255, 255, 255, 28))
+
+    avatar_d = round(width * 0.42)
+    avatar = Image.open(
+        io.BytesIO(frames_mod.apply(avatar_src, colour_index, frame_index))
+    ).convert("RGBA").resize((avatar_d, avatar_d), Image.LANCZOS)
+    mask = Image.new("L", (avatar_d * 4, avatar_d * 4), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, avatar_d * 4 - 1, avatar_d * 4 - 1), fill=255)
+    avatar.putalpha(mask.resize((avatar_d, avatar_d), Image.LANCZOS))
+    plate.paste(avatar, ((width - avatar_d) // 2, round(height * 0.14)), avatar)
+
+    draw = ImageDraw.Draw(plate, "RGBA")
+    #: Зазор между именем и статусом считаем от кегля имени, а не от
+    #: высоты карточки: при 0.085 высоты строки налезали друг на друга.
+    name_size = round(width * 0.085)
+    name_y = round(height * 0.14) + avatar_d + round(name_size * 0.95)
+    draw.text((width / 2, name_y), name, font=font(name_size), fill=INK, anchor="mm")
+    draw.text((width / 2, name_y + round(name_size * 1.15)), "был(а) недавно",
+              font=font(round(width * 0.05)), fill=(255, 255, 255, 200), anchor="mm")
+
+    rounded = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    rmask = Image.new("L", (width * 2, height * 2), 0)
+    ImageDraw.Draw(rmask).rounded_rectangle(
+        (0, 0, width * 2 - 1, height * 2 - 1), radius=round(width * 0.12), fill=255
+    )
+    rounded.paste(plate, (0, 0), rmask.resize((width, height), Image.LANCZOS))
+    return rounded
+
+
 def make_frames(source: bytes) -> Image.Image:
     card = backdrop()
     draw = ImageDraw.Draw(card, "RGBA")
-    draw.text((W / 2, 88), "Рамки для аватарки", font=font(56), fill=INK, anchor="mm")
-    draw.text(
-        (W / 2, 152), f"{frames_mod.frame_count()} рамок × {len(frames_mod.COLORS)} цветов профиля",
-        font=font(34), fill=DIM, anchor="mm",
-    )
+    title_plate(draw, "Рамки для аватарки")
 
-    #: Первый ряд — венки, второй — маски, третий — смешанный: так на
-    #: одной картинке видно, что рамки бывают двух разных сортов.
-    picks = [3, 5, 10, 26, 28, 30, 32, 33, 19]
-    size, gap = 268, 20
-    start_x = (W - (size * 3 + gap * 2)) // 2
-    for i, index in enumerate(picks[:9]):
-        shot = Image.open(io.BytesIO(frames_mod.apply(source, i, index))).convert("RGB")
+    #: Золотой венок, а не чернильная маска: на тёмной аватарке тёмная
+    #: маска сливается с фотографией, и рамки на витрине просто не видно.
+    hero = profile_card(source, 5, 4, "@nudick", 620, 500)
+    card.paste(hero, ((W - hero.width) // 2, 216), hero)
+
+    picks = [26, 28, 30, 33]
+    size, gap = 208, 22
+    start_x = (W - (size * len(picks) + gap * (len(picks) - 1))) // 2
+    row_y = 800
+    for i, index in enumerate(picks):
+        shot = Image.open(io.BytesIO(frames_mod.apply(source, i * 2, index))).convert("RGB")
         shot = shot.resize((size, size), Image.LANCZOS)
-        card.paste(shot, (start_x + (i % 3) * (size + gap), 226 + (i // 3) * (size + gap)))
+        card.paste(shot, (start_x + i * (size + gap), row_y))
 
-    draw.text(
-        (W / 2, H - 150),
-        "Фон под рамкой — цвет твоего профиля,\nпоэтому она выглядит частью интерфейса",
-        font=font(36), fill=INK, anchor="mm", align="center",
+    chip(
+        draw, (60, 1058, W - 60, 1216), "Как это работает",
+        [
+            f"{frames_mod.frame_count()} рамок × {len(frames_mod.COLORS)} цветов профиля.",
+            "Фон под рамкой — цвет твоего профиля,",
+            "поэтому она выглядит частью интерфейса.",
+        ],
     )
     footer(card)
     return card
@@ -376,7 +485,7 @@ CUSTOM_SOURCE = OUT / "_ai_source.png"
 def pick_source(argv: list[str]) -> bytes:
     if len(argv) > 1:
         return Path(argv[1]).read_bytes()
-    for candidate in (CUSTOM_SOURCE, CUSTOM_SOURCE.with_suffix(".jpg")):
+    for candidate in (CUSTOM_SOURCE, CUSTOM_SOURCE.with_suffix(".jpg"), OUT / "_nudick.jpg"):
         if candidate.is_file():
             print(f"витрина: {candidate.name}")
             return candidate.read_bytes()
