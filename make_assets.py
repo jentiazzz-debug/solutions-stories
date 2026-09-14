@@ -687,12 +687,12 @@ def make_frames(source: bytes) -> Image.Image:
     draw = ImageDraw.Draw(card, "RGBA")
     title_plate(draw, "Рамки для аватарки")
 
-    #: Золотой венок, а не чернильная маска: на тёмной аватарке тёмная
-    #: маска сливается с фотографией, и рамки на витрине просто не видно.
-    hero = profile_card(source, 0, 7, "@nudick", 620, 500)
+    #: На витрину — самая нарядная из загруженных: витрина продаёт
+    #: рамки, а не движок, и рисованная продаёт лучше процедурной.
+    hero = profile_card(source, 11, 7, "@nudick", 620, 500)
     card.paste(hero, ((W - hero.width) // 2, 216), hero)
 
-    picks = [3, 5, 7, 1]
+    picks = [12, 3, 5, 7]
     size, gap = 208, 22
     start_x = (W - (size * len(picks) + gap * (len(picks) - 1))) // 2
     row_y = 800

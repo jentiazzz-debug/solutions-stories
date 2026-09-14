@@ -505,7 +505,9 @@ def frame_count() -> int:
 def frame_name(index: int) -> str:
     if index < len(FRAMES):
         return FRAMES[index][0]
-    return custom_frames()[index - len(FRAMES)].stem
+    #: Подчёркивания в подписи — след от имени файла, а человек видит
+    #: это название в карусели.
+    return custom_frames()[index - len(FRAMES)].stem.replace("_", " ")
 
 
 #: Разобранные PNG держим в памяти: иначе каждая аватарка заново читает
