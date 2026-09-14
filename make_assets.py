@@ -18,7 +18,7 @@ import math
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 import frames as frames_mod
 import slicer
@@ -198,12 +198,29 @@ def phone(inner: Image.Image) -> Image.Image:
         radius=radius - rail, fill=(28, 28, 30, 255),
     )
 
+    #: Блик по стеклу. Без него экран выглядит напечатанным на корпусе:
+    #: у настоящего телефона поверх картинки всегда лежит отражение.
+    glass = screen.convert("RGBA")
+    glare = Image.new("RGBA", screen.size, (0, 0, 0, 0))
+    gw, gh = screen.width, screen.height
+    ImageDraw.Draw(glare).polygon(
+        [(-gw * 0.15, gh * 0.46), (gw * 0.58, -gh * 0.05),
+         (gw * 1.05, -gh * 0.05), (gw * 0.18, gh * 0.72)],
+        fill=(255, 255, 255, 26),
+    )
+    ImageDraw.Draw(glare).polygon(
+        [(gw * 0.62, -gh * 0.05), (gw * 1.05, -gh * 0.05),
+         (gw * 0.52, gh * 0.55), (gw * 0.34, gh * 0.55)],
+        fill=(255, 255, 255, 16),
+    )
+    glass.alpha_composite(glare.filter(ImageFilter.GaussianBlur(gw * 0.012)))
+
     mask = Image.new("L", screen.size, 0)
     ImageDraw.Draw(mask).rounded_rectangle(
         (0, 0, screen.width - 1, screen.height - 1),
         radius=round(body_w * 0.145) - bezel, fill=255,
     )
-    canvas.paste(screen, (pad + bezel, pad + bezel), mask)
+    canvas.paste(glass, (pad + bezel, pad + bezel), mask)
 
     #: Dynamic Island — 125×36 pt при ширине 430 pt.
     island_w, island_h = round(screen.width * 0.291), round(screen.width * 0.084)
@@ -230,7 +247,70 @@ def phone(inner: Image.Image) -> Image.Image:
         (box[2] - rail, y0, box[2] + rail, y0 + round(body_h * 0.085)), radius=rail, fill=btn
     )
 
+    #: Световая кромка по верхне-левой грани: титан ловит свет ребром, и
+    #: без этой линии рамка остаётся серой заливкой.
+    rim = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    ImageDraw.Draw(rim).rounded_rectangle(
+        (box[0] + 1, box[1] + 1, box[2] - 1, box[3] - 1), radius=radius,
+        outline=(255, 255, 255, 190), width=max(1, rail // 2),
+    )
+    #: Оставляем только верх и левый край — блик по всему периметру
+    #: выглядит как обводка в редакторе.
+    keep = Image.new("L", canvas.size, 0)
+    ImageDraw.Draw(keep).polygon(
+        [(0, 0), (canvas.width, 0), (0, canvas.height)], fill=255
+    )
+    canvas.alpha_composite(Image.composite(rim, Image.new("RGBA", canvas.size, (0, 0, 0, 0)), keep))
+
     return canvas.resize((canvas.width // ss, canvas.height // ss), Image.LANCZOS)
+
+
+def tilt(shell: Image.Image, angle: float) -> Image.Image:
+    """Наклонить корпус. Фронтальный телефон в упор — самая скучная подача."""
+    return shell.rotate(angle, resample=Image.BICUBIC, expand=True)
+
+
+def halo(card: Image.Image, cx: int, cy: int, radius: int, colour, strength: float = 0.55) -> None:
+    """Свечение за корпусом — телефон перестаёт лежать на плоскости.
+
+    Свет подмешивается ТОЛЬКО там, где он есть: маской служит само пятно.
+    Смешивать свечение со всей карточкой нельзя — тогда вместе с фоном
+    выцветает и заголовок, и подписи.
+    """
+    spot = Image.new("L", card.size, 0)
+    ImageDraw.Draw(spot).ellipse(
+        (cx - radius, cy - radius * 1.15, cx + radius, cy + radius * 1.15), fill=255
+    )
+    spot = spot.filter(ImageFilter.GaussianBlur(radius * 0.45))
+    spot = spot.point(lambda v: int(v * strength))
+    card.paste(Image.new("RGB", card.size, colour).convert(card.mode), (0, 0), spot)
+
+
+def floating_chip(card: Image.Image, xy, lines, size: int = 30) -> None:
+    """Плавающая подпись — приём из витрины конкурента.
+
+    Принимает несколько строк: две отдельные пилюли под одну фразу
+    читаются как обрывки, а не как подпись.
+    """
+    if isinstance(lines, str):
+        lines = [lines]
+    draw = ImageDraw.Draw(card, "RGBA")
+    face = font(size)
+    width = max(draw.textlength(line, font=face) for line in lines)
+    step = size + 12
+    x, y = xy
+    box = (x, y, x + width + 52, y + step * len(lines) + 24)
+    shadow = Image.new("RGBA", card.size, (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle(
+        (box[0] + 4, box[1] + 9, box[2] + 4, box[3] + 9), radius=28, fill=(0, 16, 24, 150)
+    )
+    card.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(11)))
+    draw = ImageDraw.Draw(card, "RGBA")
+    draw.rounded_rectangle(box, radius=28, fill=(255, 255, 255, 242))
+    cy = box[1] + 12 + step / 2
+    for line in lines:
+        draw.text(((box[0] + box[2]) / 2, cy), line, font=face, fill=(16, 32, 42), anchor="mm")
+        cy += step
 
 
 def status_bar(draw: ImageDraw.ImageDraw, width: int, colour=(255, 255, 255)) -> None:
@@ -330,6 +410,10 @@ def profile_screen(source: bytes, parts: int, width: int, name: str,
 
     gap = 2
     grid = wall_grid(source, parts, SCREEN_W, gap, seam=IOS_BG)
+    #: Витринную стенку осветляем: исходник — ночной кадр, и на превью
+    #: девять почти чёрных плиток не показывают ровным счётом ничего.
+    #: Это экспозиция демонстрации, сама нарезка исходник не трогает.
+    grid = ImageEnhance.Contrast(ImageEnhance.Brightness(grid).enhance(1.42)).enhance(1.12)
     #: Сетка уходит за нижний край — так и выглядит настоящий скриншот,
     #: аккуратно уместившаяся сетка сразу читается как макет.
     screen.paste(grid, (0, grid_top))
@@ -471,21 +555,22 @@ def make_welcome(source: bytes) -> Image.Image:
     title_plate(draw, "Стенка из сторис", top=44, size=58)
 
     shell = phone(profile_screen(source, 9, SCREEN_W, OWNER))
-    scale = 920 / shell.height
+    scale = 840 / shell.height
     shell = shell.resize((round(shell.width * scale), round(shell.height * scale)), Image.LANCZOS)
-    card.paste(shell, ((W - shell.width) // 2, 182), shell)
+    shell = tilt(shell, -7)
 
-    draw = ImageDraw.Draw(card, "RGBA")
-    #: Подпись в плашке, а не поверх градиента: внизу фон самый светлый,
-    #: и белый текст на нём исчезает.
-    face = font(38)
-    text = "Одна картинка — целый профиль"
-    width = draw.textlength(text, font=face)
-    draw.rounded_rectangle(
-        ((W - width) / 2 - 38, H - 158, (W + width) / 2 + 38, H - 84),
-        radius=RADIUS, fill=PLATE + (PLATE_ALPHA,),
-    )
-    draw.text((W / 2, H - 121), text, font=face, fill=INK, anchor="mm")
+    #: Свет за телефоном ставим до самого телефона, иначе он ляжет
+    #: поверх корпуса и получится туман.
+    halo(card, 330, 640, 300, (86, 220, 236), 0.42)
+    card = card.convert("RGBA")
+    card.alpha_composite(shell, (34, 210))
+
+    #: Плашки справа перекрывают корпус — из-за этого композиция
+    #: перестаёт быть «телефон по центру и подпись снизу».
+    floating_chip(card, (500, 296), "Красивое оформление")
+    floating_chip(card, (556, 600), ["Одна картинка —", "весь профиль"])
+    floating_chip(card, (518, 986), "Выделись среди других", 27)
+
     footer(card)
     return card
 
@@ -495,17 +580,23 @@ def make_about(source: bytes) -> Image.Image:
     draw = ImageDraw.Draw(card, "RGBA")
     title_plate(draw, "Было / стало")
 
+    #: Наклон навстречу друг другу: два одинаково стоящих корпуса
+    #: читаются как таблица, развёрнутые — как сравнение.
     shells = []
-    for inner in (blank_screen(OWNER), profile_screen(source, 9, SCREEN_W, OWNER)):
+    for inner, angle in ((blank_screen(OWNER), 6), (profile_screen(source, 9, SCREEN_W, OWNER), -6)):
         shell = phone(inner)
-        scale = 740 / shell.height
-        shells.append(
-            shell.resize((round(shell.width * scale), round(shell.height * scale)), Image.LANCZOS)
-        )
-    gap = 64
-    span = shells[0].width * 2 + gap
-    for index, shell in enumerate(shells):
-        card.paste(shell, ((W - span) // 2 + index * (shell.width + gap), 214), shell)
+        scale = 700 / shell.height
+        shell = shell.resize((round(shell.width * scale), round(shell.height * scale)),
+                             Image.LANCZOS)
+        shells.append(tilt(shell, angle))
+
+    halo(card, 700, 560, 250, (86, 220, 236), 0.34)
+    gap = 26
+    span = shells[0].width + shells[1].width + gap
+    x = (W - span) // 2
+    for shell in shells:
+        card.paste(shell, (x, 214), shell)
+        x += shell.width + gap
 
     draw = ImageDraw.Draw(card, "RGBA")
     for index, label in enumerate(("обычная лента", "стенка")):
