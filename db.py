@@ -328,6 +328,83 @@ async def overview() -> dict[str, Any]:
     }
 
 
+async def daily(days: int = 14) -> list[dict[str, Any]]:
+    """Сводка по дням: новые, генерации, звёзды.
+
+    Считаем одним проходом по каждой таблице, а не запросом на каждый
+    день: четырнадцать дней — это сорок два запроса, и на бесплатном
+    хостинге админка начинает думать по несколько секунд.
+    """
+    since = day_start(days - 1)
+    buckets: dict[int, dict[str, int]] = {
+        day_start(i): {"new": 0, "cuts": 0, "stars": 0, "paid": 0} for i in range(days)
+    }
+
+    def bucket_of(at: int) -> int | None:
+        for start in buckets:
+            if start <= at < start + 86400:
+                return start
+        return None
+
+    for row in await _all("SELECT joined_at FROM users WHERE joined_at >= ?", (since,)):
+        key = bucket_of(int(row["joined_at"]))
+        if key is not None:
+            buckets[key]["new"] += 1
+    for row in await _all("SELECT at, paid FROM cuts WHERE at >= ?", (since,)):
+        key = bucket_of(int(row["at"]))
+        if key is not None:
+            buckets[key]["cuts"] += 1
+            if int(row["paid"]):
+                buckets[key]["paid"] += 1
+    for row in await _all("SELECT at, stars FROM payments WHERE at >= ?", (since,)):
+        key = bucket_of(int(row["at"]))
+        if key is not None:
+            buckets[key]["stars"] += int(row["stars"])
+
+    return [
+        {"day": start, **values}
+        for start, values in sorted(buckets.items(), reverse=True)
+    ]
+
+
+async def last_payments(limit: int = 15) -> list[aiosqlite.Row]:
+    return await _all(
+        """
+        SELECT p.at, p.stars, p.payload, u.username, u.first_name
+        FROM payments p LEFT JOIN users u ON u.id = p.user_id
+        ORDER BY p.at DESC LIMIT ?
+        """,
+        (limit,),
+    )
+
+
+async def find_user(query: str) -> aiosqlite.Row | None:
+    """Найти человека по id или @username — для разбора жалоб."""
+    query = query.strip().lstrip("@")
+    if query.isdigit():
+        return await _one("SELECT * FROM users WHERE id = ?", (int(query),))
+    return await _one("SELECT * FROM users WHERE username = ? COLLATE NOCASE", (query,))
+
+
+async def user_activity(user_id: int) -> dict[str, Any]:
+    """Что человек делал: генерации, траты, кого привёл."""
+    total, active = await ref_stats(user_id)
+    return {
+        "cuts": await _scalar("SELECT COUNT(*) FROM cuts WHERE user_id = ?", (user_id,)),
+        "paid_cuts": await _scalar(
+            "SELECT COUNT(*) FROM cuts WHERE user_id = ? AND paid > 0", (user_id,)
+        ),
+        "stars": await _scalar(
+            "SELECT COALESCE(SUM(stars), 0) FROM payments WHERE user_id = ?", (user_id,)
+        ),
+        "last_cut": await _scalar(
+            "SELECT COALESCE(MAX(at), 0) FROM cuts WHERE user_id = ?", (user_id,)
+        ),
+        "refs_total": total,
+        "refs_active": active,
+    }
+
+
 async def top_users(limit: int = 5) -> list[aiosqlite.Row]:
     return await _all(
         "SELECT username, first_name, cuts, stars FROM users WHERE cuts > 0 "

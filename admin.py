@@ -36,6 +36,10 @@ class Cast(StatesGroup):
     post = State()
 
 
+class Lookup(StatesGroup):
+    query = State()
+
+
 router.message.filter(F.from_user.id.in_(config.ADMIN_IDS))
 router.callback_query.filter(F.from_user.id.in_(config.ADMIN_IDS))
 
@@ -53,28 +57,48 @@ async def cb_main(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+def _pct(part: int, whole: int) -> str:
+    return f"{part / whole * 100:.1f}%" if whole else "—"
+
+
 def _stats_text(data: dict) -> str:
     parts = data.get("parts", {})
     grid = " · ".join(
         f"{n}: <b>{parts.get(f'p{n}', 0)}</b>" for n in (6, 9, 12, 15)
     )
-    return (
-        "📊 <b>Статистика</b>\n\n"
-        f"Людей всего: <b>{data['users']}</b>\n"
-        f"Открыли бота: <b>{data['started']}</b> · заблокировали: <b>{data['blocked']}</b>\n"
-        f"Новых сегодня: <b>{data['new_today']}</b> · за неделю: <b>{data['new_week']}</b>\n"
-        f"Активных сегодня: <b>{data['active_today']}</b> · за месяц: <b>{data['active_month']}</b>\n\n"
-        f"✂️ Генераций: <b>{data['cuts']}</b>\n"
+    paid_cuts = data["cuts"] - data["free"]
+    check = f"{data['stars'] / data['buyers']:.0f}" if data["buyers"] else "—"
+    arpu = f"{data['stars'] / data['started']:.2f}" if data["started"] else "—"
+    #: Три числа, по которым и принимают решения: доля платящих, средний
+    #: чек и выручка на человека. Без них «всего звёзд» ни о чём не
+    #: говорит — непонятно, много это или мало.
+    return "\n".join((
+        "📊 <b>Статистика</b>",
+        "",
+        f"👥 Людей всего: <b>{data['users']}</b>",
+        f"Открыли бота: <b>{data['started']}</b> · заблокировали: <b>{data['blocked']}</b>",
+        f"Новых сегодня: <b>{data['new_today']}</b> · за неделю: <b>{data['new_week']}</b>",
+        f"Активных сегодня: <b>{data['active_today']}</b> · "
+        f"за месяц: <b>{data['active_month']}</b>",
+        "",
+        f"✂️ Генераций: <b>{data['cuts']}</b> "
+        f"(платных <b>{paid_cuts}</b>, бесплатных <b>{data['free']}</b>)",
         f"Сегодня: <b>{data['cuts_today']}</b> · вчера: <b>{data['cuts_yesterday']}</b> · "
-        f"за неделю: <b>{data['cuts_week']}</b>\n"
-        f"Бесплатных из них: <b>{data['free']}</b>\n"
-        f"Сетки — {grid} · рамок: <b>{parts.get('frames', 0)}</b>\n\n"
-        f"⭐ Звёзд всего: <b>{data['stars']}</b>\n"
-        f"Сегодня: <b>{data['stars_today']}</b> · за неделю: <b>{data['stars_week']}</b>\n"
-        f"Платили: <b>{data['buyers']}</b> человек\n\n"
-        f"👥 Пришло по рефералкам: <b>{data['referred']}</b>, "
-        f"из них активных: <b>{data['referred_active']}</b>"
-    )
+        f"за неделю: <b>{data['cuts_week']}</b>",
+        f"Сетки — {grid} · рамок: <b>{parts.get('frames', 0)}</b>",
+        "",
+        f"⭐ Звёзд всего: <b>{data['stars']}</b>",
+        f"Сегодня: <b>{data['stars_today']}</b> · за неделю: <b>{data['stars_week']}</b>",
+        "",
+        "💡 <b>Деньги</b>",
+        f"Платили: <b>{data['buyers']}</b> из {data['started']} "
+        f"(<b>{_pct(data['buyers'], data['started'])}</b>)",
+        f"Средний чек: <b>{check}</b> ⭐ · на человека: <b>{arpu}</b> ⭐",
+        "",
+        f"🔗 По рефералкам: <b>{data['referred']}</b>, "
+        f"активных <b>{data['referred_active']}</b> "
+        f"(<b>{_pct(data['referred_active'], data['referred'])}</b>)",
+    ))
 
 
 @router.callback_query(F.data == "adm:stats")
@@ -107,6 +131,93 @@ async def cb_tops(callback: CallbackQuery) -> None:
     ] or ["пока пусто"]
     await callback.message.edit_text("\n".join(lines), reply_markup=kb.admin_refresh("tops"))
     await callback.answer()
+
+
+@router.callback_query(F.data == "adm:daily")
+async def cb_daily(callback: CallbackQuery) -> None:
+    rows = await db.daily(14)
+    #: Моноширинная таблица в <pre>: в Telegram это единственный способ
+    #: выровнять колонки — обычный текст съезжает на каждом шрифте.
+    lines = ["<b>📈 Последние 14 дней</b>", "", "<pre>дата    нов  ген  плат   ⭐"]
+    for row in rows:
+        when = datetime.fromtimestamp(row["day"], timezone(timedelta(hours=3)))
+        lines.append(
+            f"{when:%d.%m}  {row['new']:>4} {row['cuts']:>4} {row['paid']:>5} {row['stars']:>5}"
+        )
+    lines.append("</pre>")
+    lines.append("нов — новые люди, ген — генерации, плат — из них платных")
+    await callback.message.edit_text("\n".join(lines), reply_markup=kb.admin_refresh("daily"))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:pays")
+async def cb_pays(callback: CallbackQuery) -> None:
+    rows = await db.last_payments(15)
+    if not rows:
+        text = "💸 Платежей ещё не было."
+    else:
+        lines = ["💸 <b>Последние платежи</b>", ""]
+        for row in rows:
+            when = datetime.fromtimestamp(row["at"], timezone(timedelta(hours=3)))
+            what = row["payload"]
+            what = "рамка" if what == "frame" else f"{what.split(':')[-1]} частей"
+            lines.append(f"{when:%d.%m %H:%M} · {_who(row)} · <b>{row['stars']}</b>⭐ · {what}")
+        text = "\n".join(lines)
+    await callback.message.edit_text(text, reply_markup=kb.admin_refresh("pays"))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:find")
+async def cb_find(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Lookup.query)
+    await callback.message.edit_text(
+        "👤 Пришли <b>id</b> или <b>@username</b> — покажу карточку человека.",
+        reply_markup=kb.admin_cancel(),
+    )
+    await callback.answer()
+
+
+@router.message(Lookup.query)
+async def on_lookup(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    row = await db.find_user(message.text or "")
+    if row is None:
+        await message.answer(
+            "Не нашёл. Юзернейм запоминается только после захода в бота.",
+            reply_markup=kb.admin(),
+        )
+        return
+
+    facts = await db.user_activity(int(row["id"]))
+    joined = datetime.fromtimestamp(row["joined_at"], timezone(timedelta(hours=3)))
+    seen = datetime.fromtimestamp(row["last_seen"], timezone(timedelta(hours=3)))
+    last_cut = (
+        datetime.fromtimestamp(facts["last_cut"], timezone(timedelta(hours=3))).strftime(
+            "%d.%m %H:%M"
+        )
+        if facts["last_cut"]
+        else "не резал"
+    )
+    await message.answer(
+        "\n".join((
+            f"👤 {_who(row)} · <code>{row['id']}</code>",
+            "",
+            f"Пришёл: {joined:%d.%m.%Y}",
+            f"Был: {seen:%d.%m %H:%M}",
+            f"Открыл бота: {'да' if row['started'] else 'нет'} · "
+            f"заблокировал: {'да' if row['blocked'] else 'нет'}",
+            "",
+            f"✂️ Генераций: <b>{facts['cuts']}</b> (платных <b>{facts['paid_cuts']}</b>)",
+            f"Последняя: {last_cut}",
+            f"⭐ Потратил: <b>{facts['stars']}</b>",
+            f"🎁 Бесплатных осталось: <b>{row['credits']}</b>",
+            "",
+            f"🔗 Привёл: <b>{facts['refs_total']}</b>, "
+            f"активных <b>{facts['refs_active']}</b>",
+            f"Пришёл по ссылке: {row['ref_by'] or '—'}",
+        )),
+        reply_markup=kb.admin(),
+    )
 
 
 @router.callback_query(F.data == "adm:history")

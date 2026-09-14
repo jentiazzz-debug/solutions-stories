@@ -130,8 +130,13 @@ def admin() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="📊 Статистика", callback_data="adm:stats"),
-                InlineKeyboardButton(text="🏆 Топы", callback_data="adm:tops"),
+                InlineKeyboardButton(text="📈 По дням", callback_data="adm:daily"),
             ],
+            [
+                InlineKeyboardButton(text="🏆 Топы", callback_data="adm:tops"),
+                InlineKeyboardButton(text="💸 Платежи", callback_data="adm:pays"),
+            ],
+            [InlineKeyboardButton(text="👤 Найти человека", callback_data="adm:find")],
             [InlineKeyboardButton(text="📣 Рассылка", callback_data="adm:cast")],
             [InlineKeyboardButton(text="🧾 История рассылок", callback_data="adm:history")],
         ]
