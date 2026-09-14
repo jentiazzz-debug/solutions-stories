@@ -1,0 +1,367 @@
+"""SQLite: люди, нарезки, рефералы, платежи, рассылки.
+
+Нарезки пишутся журналом, а не счётчиком. Счётчик отвечает только на «а
+сколько всего», журнал — ещё и на «когда», «на сколько частей» и «за
+звёзды или бесплатно»; по нему же видно, какой вариант сетки людям
+реально нужен, и где цена мимо.
+"""
+
+from __future__ import annotations
+
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable
+
+import aiosqlite
+
+import config
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id          INTEGER PRIMARY KEY,
+    username    TEXT,
+    first_name  TEXT,
+    joined_at   INTEGER NOT NULL,
+    last_seen   INTEGER NOT NULL DEFAULT 0,
+    started     INTEGER NOT NULL DEFAULT 0,
+    blocked     INTEGER NOT NULL DEFAULT 0,
+    credits     INTEGER NOT NULL DEFAULT 0,
+    cuts        INTEGER NOT NULL DEFAULT 0,
+    stars       INTEGER NOT NULL DEFAULT 0,
+    ref_by      INTEGER,
+    activated   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS users_seen ON users (last_seen);
+CREATE INDEX IF NOT EXISTS users_ref ON users (ref_by);
+
+CREATE TABLE IF NOT EXISTS cuts (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    at      INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    kind    TEXT NOT NULL,
+    parts   INTEGER NOT NULL DEFAULT 0,
+    paid    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS cuts_at ON cuts (at);
+CREATE INDEX IF NOT EXISTS cuts_user ON cuts (user_id, at);
+
+CREATE TABLE IF NOT EXISTS payments (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    at        INTEGER NOT NULL,
+    user_id   INTEGER NOT NULL,
+    stars     INTEGER NOT NULL,
+    payload   TEXT NOT NULL,
+    charge_id TEXT
+);
+CREATE INDEX IF NOT EXISTS payments_at ON payments (at);
+
+CREATE TABLE IF NOT EXISTS broadcasts (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    at       INTEGER NOT NULL,
+    admin_id INTEGER NOT NULL,
+    total    INTEGER NOT NULL,
+    sent     INTEGER NOT NULL,
+    blocked  INTEGER NOT NULL,
+    failed   INTEGER NOT NULL
+);
+"""
+
+_db: aiosqlite.Connection | None = None
+
+
+def now() -> int:
+    return int(time.time())
+
+
+def day_start(days_ago: int = 0) -> int:
+    """Полночь по Москве, а не по UTC сервера.
+
+    «Нарезок за сегодня» должно означать сегодня у того, кто смотрит
+    статистику: на UTC-хостинге счётчик иначе обнуляется в три часа ночи
+    посреди самого живого времени.
+    """
+    local = datetime.now(timezone.utc) + timedelta(hours=3)
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    midnight -= timedelta(days=days_ago)
+    return int((midnight - timedelta(hours=3)).replace(tzinfo=timezone.utc).timestamp())
+
+
+async def connect() -> None:
+    global _db
+    config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _db = await aiosqlite.connect(config.DB_PATH)
+    _db.row_factory = aiosqlite.Row
+    await _db.executescript(SCHEMA)
+    await _db.commit()
+
+
+async def close() -> None:
+    if _db is not None:
+        await _db.close()
+
+
+def conn() -> aiosqlite.Connection:
+    if _db is None:
+        raise RuntimeError("База не открыта: сначала db.connect()")
+    return _db
+
+
+async def _all(sql: str, args: Iterable[Any] = ()) -> list[aiosqlite.Row]:
+    async with conn().execute(sql, tuple(args)) as cur:
+        return list(await cur.fetchall())
+
+
+async def _one(sql: str, args: Iterable[Any] = ()) -> aiosqlite.Row | None:
+    async with conn().execute(sql, tuple(args)) as cur:
+        return await cur.fetchone()
+
+
+async def _scalar(sql: str, args: Iterable[Any] = ()) -> int:
+    row = await _one(sql, args)
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+async def _run(sql: str, args: Iterable[Any] = ()) -> None:
+    await conn().execute(sql, tuple(args))
+    await conn().commit()
+
+
+# --------------------------------------------------------------------------
+# Люди
+# --------------------------------------------------------------------------
+
+
+async def touch_user(user_id: int, username: str | None, first_name: str) -> None:
+    """Запомнить человека и обновить имя.
+
+    Метка blocked снимается при каждой встрече: раз человек снова что-то
+    жмёт, значит бота он разблокировал — и в следующую рассылку обязан
+    попасть, иначе однажды забаненный останется вычеркнутым навсегда.
+    """
+    await _run(
+        """
+        INSERT INTO users (id, username, first_name, joined_at, last_seen, credits)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (id) DO UPDATE SET
+            username = excluded.username,
+            first_name = excluded.first_name,
+            last_seen = excluded.last_seen,
+            blocked = 0
+        """,
+        (user_id, username, first_name, now(), now(), config.WELCOME_CREDITS),
+    )
+
+
+async def get_user(user_id: int) -> aiosqlite.Row | None:
+    return await _one("SELECT * FROM users WHERE id = ?", (user_id,))
+
+
+async def mark_started(user_id: int) -> None:
+    await _run("UPDATE users SET started = 1, blocked = 0 WHERE id = ?", (user_id,))
+
+
+async def mark_blocked(user_id: int) -> None:
+    await _run("UPDATE users SET blocked = 1 WHERE id = ?", (user_id,))
+
+
+async def audience(active_days: int | None = None) -> list[int]:
+    sql = "SELECT id FROM users WHERE started = 1 AND blocked = 0"
+    args: list[Any] = []
+    if active_days:
+        sql += " AND last_seen >= ?"
+        args.append(now() - active_days * 86400)
+    return [int(row["id"]) for row in await _all(sql, args)]
+
+
+# --------------------------------------------------------------------------
+# Рефералы
+# --------------------------------------------------------------------------
+#
+# Приглашение засчитывается не в момент перехода по ссылке, а когда
+# новичок впервые что-то сделал. Иначе вся механика сводится к рассылке
+# ссылки по чатам: сто открытых /start — тридцать три бесплатных
+# нарезки, и ни одного живого человека.
+
+
+async def bind_ref(user_id: int, inviter_id: int) -> None:
+    """Привязать новичка к пригласившему — один раз и навсегда.
+
+    Перезаписывать нельзя: иначе последний, кто скинул ссылку, забирает
+    чужого реферала, и ссылками начинают бить друг по другу.
+    """
+    if user_id == inviter_id:
+        return
+    await _run(
+        "UPDATE users SET ref_by = ? WHERE id = ? AND ref_by IS NULL",
+        (inviter_id, user_id),
+    )
+
+
+async def activate(user_id: int) -> int | None:
+    """Отметить первое осмысленное действие. Вернуть id пригласившего,
+    если тому пора начислять бесплатную генерацию.
+    """
+    row = await get_user(user_id)
+    if row is None or row["activated"]:
+        return None
+    await _run("UPDATE users SET activated = 1 WHERE id = ?", (user_id,))
+
+    inviter = row["ref_by"]
+    if not inviter:
+        return None
+    active = await _scalar(
+        "SELECT COUNT(*) FROM users WHERE ref_by = ? AND activated = 1", (inviter,)
+    )
+    #: Начисляем ровно на каждом третьем, а не «выдать active // 3»:
+    #: второй вариант при пересчёте задним числом раздаёт кратные суммы
+    #: повторно, стоит один раз тронуть формулу.
+    if active % config.REF_PER_FREE == 0:
+        await add_credits(inviter, 1)
+        return int(inviter)
+    return None
+
+
+async def ref_stats(user_id: int) -> tuple[int, int]:
+    """Сколько всего перешло и сколько из них активных."""
+    total = await _scalar("SELECT COUNT(*) FROM users WHERE ref_by = ?", (user_id,))
+    active = await _scalar(
+        "SELECT COUNT(*) FROM users WHERE ref_by = ? AND activated = 1", (user_id,)
+    )
+    return total, active
+
+
+# --------------------------------------------------------------------------
+# Бесплатные генерации
+# --------------------------------------------------------------------------
+
+
+async def add_credits(user_id: int, count: int) -> int:
+    await _run("UPDATE users SET credits = credits + ? WHERE id = ?", (count, user_id))
+    return await _scalar("SELECT credits FROM users WHERE id = ?", (user_id,))
+
+
+async def spend_credit(user_id: int) -> bool:
+    """Списать одну бесплатную генерацию.
+
+    Условие credits > 0 стоит в самом UPDATE, а не в отдельной проверке:
+    два быстрых нажатия на «нарезать» — это две корутины, и между
+    «прочитали» и «записали» вторая успевает списать тот же остаток.
+    """
+    cur = await conn().execute(
+        "UPDATE users SET credits = credits - 1 WHERE id = ? AND credits > 0", (user_id,)
+    )
+    await conn().commit()
+    return cur.rowcount > 0
+
+
+# --------------------------------------------------------------------------
+# Работа и деньги
+# --------------------------------------------------------------------------
+
+
+async def log_cut(user_id: int, kind: str, parts: int, paid: int) -> None:
+    await _run(
+        "INSERT INTO cuts (at, user_id, kind, parts, paid) VALUES (?, ?, ?, ?, ?)",
+        (now(), user_id, kind, parts, paid),
+    )
+    await _run("UPDATE users SET cuts = cuts + 1 WHERE id = ?", (user_id,))
+
+
+async def log_payment(user_id: int, stars: int, payload: str, charge_id: str | None) -> None:
+    await _run(
+        "INSERT INTO payments (at, user_id, stars, payload, charge_id) VALUES (?, ?, ?, ?, ?)",
+        (now(), user_id, stars, payload, charge_id),
+    )
+    await _run("UPDATE users SET stars = stars + ? WHERE id = ?", (stars, user_id))
+
+
+# --------------------------------------------------------------------------
+# Статистика
+# --------------------------------------------------------------------------
+
+
+async def overview() -> dict[str, Any]:
+    week = now() - 7 * 86400
+    month = now() - 30 * 86400
+    today = day_start()
+    yesterday = day_start(1)
+
+    parts = await _one(
+        """
+        SELECT
+            SUM(parts = 6) p6, SUM(parts = 9) p9,
+            SUM(parts = 12) p12, SUM(parts = 15) p15,
+            SUM(kind = 'frame') frames
+        FROM cuts
+        """
+    )
+    return {
+        "users": await _scalar("SELECT COUNT(*) FROM users"),
+        "started": await _scalar("SELECT COUNT(*) FROM users WHERE started = 1"),
+        "blocked": await _scalar("SELECT COUNT(*) FROM users WHERE blocked = 1"),
+        "new_today": await _scalar("SELECT COUNT(*) FROM users WHERE joined_at >= ?", (today,)),
+        "new_week": await _scalar("SELECT COUNT(*) FROM users WHERE joined_at >= ?", (week,)),
+        "active_today": await _scalar("SELECT COUNT(*) FROM users WHERE last_seen >= ?", (today,)),
+        "active_month": await _scalar("SELECT COUNT(*) FROM users WHERE last_seen >= ?", (month,)),
+        "cuts": await _scalar("SELECT COUNT(*) FROM cuts"),
+        "cuts_today": await _scalar("SELECT COUNT(*) FROM cuts WHERE at >= ?", (today,)),
+        "cuts_yesterday": await _scalar(
+            "SELECT COUNT(*) FROM cuts WHERE at >= ? AND at < ?", (yesterday, today)
+        ),
+        "cuts_week": await _scalar("SELECT COUNT(*) FROM cuts WHERE at >= ?", (week,)),
+        "free": await _scalar("SELECT COUNT(*) FROM cuts WHERE paid = 0"),
+        "stars": await _scalar("SELECT COALESCE(SUM(stars), 0) FROM payments"),
+        "stars_today": await _scalar(
+            "SELECT COALESCE(SUM(stars), 0) FROM payments WHERE at >= ?", (today,)
+        ),
+        "stars_week": await _scalar(
+            "SELECT COALESCE(SUM(stars), 0) FROM payments WHERE at >= ?", (week,)
+        ),
+        "buyers": await _scalar("SELECT COUNT(DISTINCT user_id) FROM payments"),
+        "referred": await _scalar("SELECT COUNT(*) FROM users WHERE ref_by IS NOT NULL"),
+        "referred_active": await _scalar(
+            "SELECT COUNT(*) FROM users WHERE ref_by IS NOT NULL AND activated = 1"
+        ),
+        "parts": {k: int(parts[k] or 0) for k in ("p6", "p9", "p12", "p15", "frames")}
+        if parts
+        else {},
+    }
+
+
+async def top_users(limit: int = 5) -> list[aiosqlite.Row]:
+    return await _all(
+        "SELECT username, first_name, cuts, stars FROM users WHERE cuts > 0 "
+        "ORDER BY stars DESC, cuts DESC LIMIT ?",
+        (limit,),
+    )
+
+
+async def top_inviters(limit: int = 5) -> list[aiosqlite.Row]:
+    return await _all(
+        """
+        SELECT u.username, u.first_name, COUNT(r.id) total,
+               SUM(r.activated) active
+        FROM users u JOIN users r ON r.ref_by = u.id
+        GROUP BY u.id ORDER BY active DESC, total DESC LIMIT ?
+        """,
+        (limit,),
+    )
+
+
+# --------------------------------------------------------------------------
+# Рассылки
+# --------------------------------------------------------------------------
+
+
+async def save_broadcast(
+    admin_id: int, total: int, sent: int, blocked: int, failed: int
+) -> None:
+    await _run(
+        "INSERT INTO broadcasts (at, admin_id, total, sent, blocked, failed) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (now(), admin_id, total, sent, blocked, failed),
+    )
+
+
+async def last_broadcasts(limit: int = 10) -> list[aiosqlite.Row]:
+    return await _all("SELECT * FROM broadcasts ORDER BY at DESC LIMIT ?", (limit,))
