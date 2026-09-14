@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import html
+import io
 import logging
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import (
@@ -21,10 +24,12 @@ from aiogram.exceptions import (
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from PIL import Image
 
 import config
 import db
+import frames
 import keyboards as kb
 import texts
 
@@ -47,6 +52,10 @@ class Lookup(StatesGroup):
 
 class Grant(StatesGroup):
     query = State()
+
+
+class FrameUpload(StatesGroup):
+    file = State()
 
 
 async def _apply_grant(bot: Bot, admin_id: int, user_id: int, amount: int,
@@ -326,6 +335,111 @@ async def cb_give(callback: CallbackQuery) -> None:
         f"{callback.message.html_text}\n\n🎁 {int(amount):+d} → баланс <b>{balance}</b>",
         reply_markup=kb.user_card(int(user_id)),
     )
+
+
+@router.callback_query(F.data == "adm:frames")
+async def cb_frames(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    files = frames.custom_frames()
+    lines = [
+        "🖼 <b>Рамки</b>",
+        "",
+        f"Нарисованных в коде: <b>{len(frames.FRAMES)}</b>",
+        f"Своих загружено: <b>{len(files)}</b>",
+    ]
+    if files:
+        lines += ["", *(f"• {path.stem}" for path in files[:12])]
+    await callback.message.edit_text(
+        "\n".join(lines), reply_markup=kb.frames_panel([p.stem for p in files])
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:frame:add")
+async def cb_frame_add(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(FrameUpload.file)
+    await callback.message.edit_text(
+        "🖼 Пришли картинку рамки.\n\n"
+        "<b>Отправляй файлом</b>, а не фото: фото Telegram пережимает в JPEG "
+        "и убивает прозрачность.\n\n"
+        "Квадрат, рамка по краю, середина пустая. Фон вырежу сам, "
+        "размер фото под просвет подберу тоже сам.",
+        reply_markup=kb.admin_cancel(),
+    )
+    await callback.answer()
+
+
+@router.message(FrameUpload.file, F.document | F.photo)
+async def on_frame_file(message: Message, state: FSMContext) -> None:
+    if message.photo:
+        await message.answer(
+            "⚠️ Это пришло как фото — прозрачность уже потеряна. Возьму как есть "
+            "и вырежу фон, но лучше переслать тем же файлом."
+        )
+        file_id = message.photo[-1].file_id
+        name = f"frame_{db.now()}"
+    else:
+        doc = message.document
+        if not (doc.mime_type or "").startswith("image/"):
+            await message.answer("Это не картинка. Нужен PNG.")
+            return
+        file_id = doc.file_id
+        name = Path(doc.file_name or f"frame_{db.now()}").stem
+
+    #: Имя чистим: оно станет подписью в карусели и именем файла на
+    #: диске, а туда прилетает всё что угодно — от пробелов до кавычек.
+    safe = re.sub(r"[^\w\-]+", "_", name, flags=re.UNICODE).strip("_") or f"frame_{db.now()}"
+    config.FRAMES_DIR.mkdir(parents=True, exist_ok=True)
+    target = config.FRAMES_DIR / f"{safe}.png"
+
+    buffer = await message.bot.download(file_id)
+    try:
+        with Image.open(io.BytesIO(buffer.read())) as img:
+            #: Сохраняем именно PNG: пришедший JPEG иначе останется без
+            #: альфы, и вырезанный фон будет некуда записать.
+            img.convert("RGBA").save(target, format="PNG", optimize=True)
+    except Exception:
+        logger.exception("рамка не открылась")
+        await message.answer("Не смог прочитать картинку. Попробуй другой файл.")
+        return
+
+    await state.clear()
+    files = frames.custom_frames()
+    index = next(
+        (len(frames.FRAMES) + i for i, path in enumerate(files) if path == target),
+        len(frames.FRAMES),
+    )
+    shot = await asyncio.to_thread(frames.preview, 0, index, "проверка")
+    await message.answer_photo(
+        BufferedInputFile(shot, filename="frame.jpg"),
+        caption=(
+            f"✅ Рамка <b>{safe}</b> добавлена.\n"
+            f"Всего в карусели: <b>{frames.frame_count()}</b>.\n\n"
+            "Если на чёрном фоне её не видно — рамка тёмная, это нормально: "
+            "посмотри на светлом."
+        ),
+        reply_markup=kb.admin(),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:frame:del:"))
+async def cb_frame_del(callback: CallbackQuery, state: FSMContext) -> None:
+    index = int(callback.data.rsplit(":", 1)[1])
+    files = frames.custom_frames()
+    if index >= len(files):
+        await callback.answer("Уже удалена", show_alert=True)
+        return
+    target = files[index]
+    #: Рамки из репозитория не трогаем: файл вернётся на следующем
+    #: деплое, и кнопка будет выглядеть сломанной.
+    if target.parent != config.FRAMES_DIR:
+        await callback.answer(
+            "Эта рамка лежит в репозитории — удалять её нужно там.", show_alert=True
+        )
+        return
+    target.unlink(missing_ok=True)
+    await callback.answer(f"Удалена: {target.stem}")
+    await cb_frames(callback, state)
 
 
 @router.callback_query(F.data == "adm:history")

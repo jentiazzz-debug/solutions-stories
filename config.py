@@ -38,6 +38,11 @@ ADMIN_IDS = _ids(os.getenv("ADMIN_IDS"))
 DATA_DIR = Path(os.getenv("DATA_DIR") or BASE_DIR / "data")
 DB_PATH = Path(os.getenv("DB_PATH") or DATA_DIR / "stories.db")
 
+#: Рамки, присланные админом прямо в бота. Лежат в томе с базой, а не
+#: рядом с кодом: папка проекта перезаписывается на каждом деплое из
+#: Git, и загруженные рамки исчезали бы после первого же обновления.
+FRAMES_DIR = Path(os.getenv("FRAMES_DIR") or DATA_DIR / "frames")
+
 #: Картинки-заставки для /start, инструкции и раздела «для чего это».
 #: Лежат файлами, а не file_id: file_id живёт внутри одного бота, и при
 #: переезде на другой токен всё оформление отвалится молча.

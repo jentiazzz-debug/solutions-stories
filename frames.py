@@ -486,10 +486,16 @@ FRAMES: list[tuple[str, object]] = [
 
 
 def custom_frames() -> list[Path]:
-    """PNG из assets/frames — по алфавиту, чтобы номера не прыгали."""
-    if not CUSTOM_DIR.is_dir():
-        return []
-    return sorted(p for p in CUSTOM_DIR.iterdir() if p.suffix.lower() == ".png")
+    """Свои PNG: из репозитория и из тома с загруженными.
+
+    Сортируем по имени, а не по папке: номер рамки в карусели не должен
+    меняться от того, откуда она приехала.
+    """
+    found: list[Path] = []
+    for folder in (CUSTOM_DIR, config.FRAMES_DIR):
+        if folder.is_dir():
+            found += [p for p in folder.iterdir() if p.suffix.lower() == ".png"]
+    return sorted(found, key=lambda p: p.name.lower())
 
 
 def frame_count() -> int:
@@ -614,7 +620,9 @@ def _avatar_fraction(index: int, size: int) -> float:
     #: и (2r) / size — одно и то же число.
     #: 1.06 — лёгкий нахлёст, иначе между фото и рисунком видна щель
     #: подложки. Потолок — чтобы фото не вылезло за круг Telegram.
-    return min(0.94, hole * 1.06)
+    #: Пол — на случай декоративного колечка у самого центра: под него
+    #: фото ужалось бы до марки, а лёгкий нахлёст на рисунок терпимее.
+    return min(0.94, max(0.46, hole * 1.06))
 
 
 # --------------------------------------------------------------------------
@@ -649,8 +657,14 @@ def _placeholder(side: int) -> Image.Image:
 
 
 def _compose(photo: Image.Image | None, backdrop_idx: int, frame_idx: int,
-             size: int) -> Image.Image:
-    canvas = backdrop(backdrop_idx, size).convert("RGBA")
+             size: int, with_backdrop: bool = True) -> Image.Image:
+    #: with_backdrop=False нужен превью: там аватарка ложится на фон
+    #: самой карточки. Со своим квадратом фона её радиальный градиент не
+    #: совпадает с градиентом карточки, и по краю квадрата виден шов.
+    canvas = (
+        backdrop(backdrop_idx, size).convert("RGBA") if with_backdrop
+        else Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    )
 
     #: Размер фото подгоняется под дырку рамки. У нарисованных он 60 %,
     #: у купленных PNG считается по прозрачной середине: иначе одна
@@ -705,9 +719,7 @@ def preview(backdrop_idx: int, frame_idx: int | None, title: str) -> bytes:
         blank.putalpha(_circle_mask(blank.width))
         avatar.alpha_composite(blank, (84, 84))
     else:
-        avatar = _compose(None, backdrop_idx, frame_idx, 420)
-        #: Углы карточки и углы аватарки — один и тот же фон, поэтому
-        #: границу квадрата не видно: ровно так это выглядит в профиле.
+        avatar = _compose(None, backdrop_idx, frame_idx, 420, with_backdrop=False)
     card.alpha_composite(avatar, ((card_w - 420) // 2, 84))
 
     draw = ImageDraw.Draw(card)

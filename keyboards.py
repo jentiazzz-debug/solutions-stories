@@ -140,6 +140,7 @@ def admin() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="👤 Найти человека", callback_data="adm:find"),
                 InlineKeyboardButton(text="🎁 Выдать", callback_data="adm:grant"),
             ],
+            [InlineKeyboardButton(text="🖼 Рамки", callback_data="adm:frames")],
             [InlineKeyboardButton(text="📣 Рассылка", callback_data="adm:cast")],
             [InlineKeyboardButton(text="🧾 История рассылок", callback_data="adm:history")],
         ]
@@ -178,6 +179,17 @@ def user_card(user_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⬅️ В панель", callback_data="adm:main")],
         ]
     )
+
+
+def frames_panel(names: list[str]) -> InlineKeyboardMarkup:
+    """Список загруженных рамок с кнопкой удаления у каждой."""
+    rows = [[InlineKeyboardButton(text="➕ Добавить рамку", callback_data="adm:frame:add")]]
+    for index, name in enumerate(names[:12]):
+        rows.append([
+            InlineKeyboardButton(text=f"🗑 {name[:28]}", callback_data=f"adm:frame:del:{index}")
+        ])
+    rows.append([InlineKeyboardButton(text="⬅️ В панель", callback_data="adm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_cancel() -> InlineKeyboardMarkup:
