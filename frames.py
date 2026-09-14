@@ -24,7 +24,7 @@ import math
 import random
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 import config
 
@@ -502,11 +502,119 @@ def frame_name(index: int) -> str:
     return custom_frames()[index - len(FRAMES)].stem
 
 
+#: Разобранные PNG держим в памяти: иначе каждая аватарка заново читает
+#: файл, вырезает фон и меряет дырку — а это десятки миллисекунд на
+#: каждый показ карусели.
+_custom_cache: dict[tuple[str, float, int], tuple[Image.Image, float]] = {}
+
+
+def _key_out_background(img: Image.Image) -> Image.Image:
+    """Убрать однотонный фон у картинки без прозрачности.
+
+    Генераторы почти всегда отдают рамку на белом. Положить такую в
+    папку как есть — значит закрыть аватарку белым квадратом, поэтому
+    фон вырезаем сами.
+
+    Цвет берём из углов, а не «белый по умолчанию»: та же рамка часто
+    приходит и на чёрном. Вырезаем по всему полю, а не заливкой от края:
+    у рамки прозрачной должна стать ещё и дырка в середине, а заливка
+    от края внутрь кольца не попадёт.
+    """
+    rgb = img.convert("RGB")
+    w, h = rgb.size
+    corners = [rgb.getpixel(p) for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
+    spread = max(max(c) - min(c) for c in zip(*corners))
+    if spread > 24:
+        #: Углы разного цвета — фон не однотонный, вырезать нечего.
+        return img
+    bg = tuple(sum(c[i] for c in corners) // 4 for i in range(3))
+
+    #: Порог с запасом: у пережатой картинки «белый» гуляет на пару
+    #: десятков единиц, и по точному совпадению остаётся кайма.
+    tolerance, band = 38, 26
+    #: Считаем разницу средствами Pillow, а не циклом по пикселям:
+    #: на 1024×1024 это миллион итераций на питоне против одного
+    #: прохода на си.
+    diff = ImageChops.difference(rgb, Image.new("RGB", (w, h), bg))
+    red, green, blue = diff.split()
+    distance = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+
+    def curve(value: int) -> int:
+        if value <= tolerance:
+            return 0
+        if value >= tolerance + band:
+            return 255
+        #: Мягкий переход по краю: жёсткий порог оставляет пиксельную
+        #: лесенку по всему контуру.
+        return round(255 * (value - tolerance) / band)
+
+    out = img.convert("RGBA")
+    out.putalpha(distance.point(curve))
+    return out
+
+
+def _hole_radius(layer: Image.Image) -> float:
+    """Доля радиуса, которую занимает прозрачная середина рамки.
+
+    Нужна, чтобы фото не налезало на рисунок: у купленных рамок дырка
+    бывает и на 40 % ширины, и на 60 %, а аватарка у нас одна на всех.
+    """
+    size = layer.width
+    alpha = layer.split()[-1]
+    px = alpha.load()
+    centre = size / 2
+    found: list[float] = []
+    for i in range(24):
+        angle = i * math.tau / 24
+        dx, dy = math.cos(angle), math.sin(angle)
+        for step in range(4, int(centre)):
+            x, y = int(centre + dx * step), int(centre + dy * step)
+            if px[x, y] > 120:
+                found.append(step / centre)
+                break
+        else:
+            found.append(1.0)
+    found.sort()
+    #: Медиана, а не минимум: одинокий шип, торчащий внутрь, не должен
+    #: ужимать фото на всю рамку.
+    return found[len(found) // 2]
+
+
+def _load_custom(path: Path, size: int) -> tuple[Image.Image, float]:
+    key = (str(path), path.stat().st_mtime, size)
+    cached = _custom_cache.get(key)
+    if cached is not None:
+        return cached
+
+    with Image.open(path) as img:
+        layer = img.convert("RGBA")
+        #: Если альфа везде непрозрачная, значит её просто нет.
+        if layer.split()[-1].getextrema()[0] > 250:
+            layer = _key_out_background(layer)
+        layer = layer.resize((size, size), Image.LANCZOS)
+    value = (layer, _hole_radius(layer))
+    _custom_cache[key] = value
+    return value
+
+
 def _frame_layer(index: int, size: int) -> Image.Image:
     if index >= len(FRAMES):
-        with Image.open(custom_frames()[index - len(FRAMES)]) as img:
-            return img.convert("RGBA").resize((size, size), Image.LANCZOS)
+        return _load_custom(custom_frames()[index - len(FRAMES)], size)[0]
     return FRAMES[index][1](Wreath(size))  # type: ignore[operator]
+
+
+def _avatar_fraction(index: int, size: int) -> float:
+    """Какую долю холста занимает фото под этой рамкой."""
+    if index < len(FRAMES):
+        #: Нарисованные рамки считаны под 60 % — у них кольцо на 0.372.
+        return 0.60
+    hole = _load_custom(custom_frames()[index - len(FRAMES)], size)[1]
+    #: _hole_radius меряет радиус в долях полуширины, а доля холста —
+    #: это диаметр в долях ширины. Множитель ровно один: hole = (r / (size/2))
+    #: и (2r) / size — одно и то же число.
+    #: 1.06 — лёгкий нахлёст, иначе между фото и рисунком видна щель
+    #: подложки. Потолок — чтобы фото не вылезло за круг Telegram.
+    return min(0.94, hole * 1.06)
 
 
 # --------------------------------------------------------------------------
@@ -544,9 +652,10 @@ def _compose(photo: Image.Image | None, backdrop_idx: int, frame_idx: int,
              size: int) -> Image.Image:
     canvas = backdrop(backdrop_idx, size).convert("RGBA")
 
-    #: Фото занимает 60 % — остальное отдано венку. Больше нельзя:
-    #: элементы начнут налезать на лицо.
-    avatar_d = round(size * 0.60)
+    #: Размер фото подгоняется под дырку рамки. У нарисованных он 60 %,
+    #: у купленных PNG считается по прозрачной середине: иначе одна
+    #: рамка налезает на лицо, а вокруг другой зияет подложка.
+    avatar_d = round(size * _avatar_fraction(frame_idx, size))
     inner = _square(photo, avatar_d) if photo is not None else _placeholder(avatar_d)
     inner.putalpha(_circle_mask(avatar_d))
     offset = (size - avatar_d) // 2
