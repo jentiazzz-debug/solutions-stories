@@ -156,56 +156,206 @@ def wall_grid(source: bytes, parts: int, box_w: int, gap: int,
     return grid
 
 
-def phone(inner: Image.Image, scale: float = 1.0) -> Image.Image:
-    """Рамка телефона вокруг готового экрана."""
-    pad = round(22 * scale)
-    radius = round(70 * scale)
-    body = Image.new("RGBA", (inner.width + pad * 2, inner.height + pad * 2), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(body)
-    draw.rounded_rectangle(
-        (0, 0, body.width - 1, body.height - 1), radius=radius, fill=(26, 29, 38, 255),
-        outline=(70, 78, 96, 255), width=max(2, round(3 * scale)),
+#: Логический экран iPhone 15/16 Pro Max — 430×932 pt. Ровно эти числа,
+#: а не «примерно вытянутый прямоугольник»: пропорция 2.167 и есть то,
+#: по чему глаз узнаёт айфон, а не марку на корпусе.
+SCREEN_W, SCREEN_H = 430, 932
+
+#: Рисуем корпус вдвое крупнее и уменьшаем: радиусы у айфона большие, и
+#: без сглаживания углы выходят ступеньками.
+PHONE_SS = 2
+
+
+def phone(inner: Image.Image) -> Image.Image:
+    """Корпус iPhone: титановая рамка, Dynamic Island, боковые кнопки."""
+    ss = PHONE_SS
+    bezel = 11 * ss
+    rail = 3 * ss
+    screen = inner.resize((inner.width * ss, inner.height * ss), Image.LANCZOS)
+
+    body_w = screen.width + bezel * 2
+    body_h = screen.height + bezel * 2
+    pad = 14 * ss
+    canvas = Image.new("RGBA", (body_w + pad * 2, body_h + pad * 2), (0, 0, 0, 0))
+
+    #: Тень отдельным слоем под корпусом: без неё телефон выглядит
+    #: наклейкой на фоне, а не предметом перед ним.
+    shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle(
+        (pad, pad + 6 * ss, pad + body_w, pad + body_h + 6 * ss),
+        radius=round(body_w * 0.145), fill=(0, 20, 28, 150),
     )
-    mask = Image.new("L", inner.size, 0)
+    canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(9 * ss)))
+
+    draw = ImageDraw.Draw(canvas)
+    box = (pad, pad, pad + body_w, pad + body_h)
+    radius = round(body_w * 0.145)
+    #: Титан: светлая рамка с тёмной внутренней кромкой. Один плоский
+    #: серый читается как пластик.
+    draw.rounded_rectangle(box, radius=radius, fill=(206, 205, 200, 255))
+    draw.rounded_rectangle(
+        (box[0] + rail, box[1] + rail, box[2] - rail, box[3] - rail),
+        radius=radius - rail, fill=(28, 28, 30, 255),
+    )
+
+    mask = Image.new("L", screen.size, 0)
     ImageDraw.Draw(mask).rounded_rectangle(
-        (0, 0, inner.width - 1, inner.height - 1), radius=round(radius * 0.75), fill=255
+        (0, 0, screen.width - 1, screen.height - 1),
+        radius=round(body_w * 0.145) - bezel, fill=255,
     )
-    body.paste(inner, (pad, pad), mask)
-    notch_w, notch_h = round(inner.width * 0.34), round(26 * scale)
+    canvas.paste(screen, (pad + bezel, pad + bezel), mask)
+
+    #: Dynamic Island — 125×36 pt при ширине 430 pt.
+    island_w, island_h = round(screen.width * 0.291), round(screen.width * 0.084)
+    island_x = pad + bezel + (screen.width - island_w) // 2
+    island_y = pad + bezel + round(screen.width * 0.026)
+    #: Тонкий тёмно-серый кант: на чёрном интерфейсе чёрная пилюля
+    #: исчезает, а это главная деталь, по которой узнают айфон.
     draw.rounded_rectangle(
-        (body.width / 2 - notch_w / 2, pad - round(2 * scale),
-         body.width / 2 + notch_w / 2, pad + notch_h),
-        radius=notch_h // 2, fill=(18, 20, 27, 255),
+        (island_x, island_y, island_x + island_w, island_y + island_h),
+        radius=island_h // 2, fill=(0, 0, 0, 255), outline=(52, 52, 56, 255), width=ss,
     )
-    return body
+
+    #: Кнопки выступают за корпус на волосок — так силуэт перестаёт быть
+    #: голым прямоугольником.
+    btn = (196, 195, 190, 255)
+    for top, height in ((0.155, 0.030), (0.225, 0.058), (0.295, 0.058)):
+        y0 = pad + round(body_h * top)
+        draw.rounded_rectangle(
+            (box[0] - rail, y0, box[0] + rail, y0 + round(body_h * height)),
+            radius=rail, fill=btn,
+        )
+    y0 = pad + round(body_h * 0.245)
+    draw.rounded_rectangle(
+        (box[2] - rail, y0, box[2] + rail, y0 + round(body_h * 0.085)), radius=rail, fill=btn
+    )
+
+    return canvas.resize((canvas.width // ss, canvas.height // ss), Image.LANCZOS)
+
+
+def status_bar(draw: ImageDraw.ImageDraw, width: int, colour=(255, 255, 255)) -> None:
+    """Время слева, сеть/Wi-Fi/батарея справа — как на скриншоте."""
+    draw.text((width * 0.085, 26), "9:41", font=font(17), fill=colour, anchor="mm")
+
+    x = width - 92
+    for i in range(4):
+        h = 4 + i * 3
+        draw.rounded_rectangle((x + i * 6, 32 - h, x + i * 6 + 4, 32), radius=1, fill=colour)
+
+    wx, wy = width - 62, 31
+    for i, r in enumerate((11, 7, 3)):
+        draw.arc((wx - r, wy - r, wx + r, wy + r), 215, 325,
+                 fill=colour, width=3 - (i == 2))
+    draw.ellipse((wx - 1.6, wy - 1.6, wx + 1.6, wy + 1.6), fill=colour)
+
+    bx = width - 40
+    draw.rounded_rectangle((bx, 18, bx + 26, 32), radius=5, outline=colour, width=2)
+    draw.rounded_rectangle((bx + 2, 20, bx + 19, 30), radius=3, fill=colour)
+    draw.rounded_rectangle((bx + 27, 23, bx + 29, 28), radius=1, fill=colour)
+
+
+#: Цвета тёмной темы Telegram на iOS.
+IOS_BG = (0, 0, 0)
+IOS_CARD = (28, 28, 30)
+IOS_GRAY = (142, 142, 147)
+IOS_BLUE = (10, 132, 255)
+
+
+def _profile_chrome(screen: Image.Image, name: str, avatar: Image.Image | None) -> int:
+    """Шапка профиля Telegram: навигация, аватарка, имя, ряд кнопок.
+
+    Возвращает Y, с которого начинается сетка публикаций.
+    """
+    width = screen.width
+    draw = ImageDraw.Draw(screen, "RGBA")
+    status_bar(draw, width)
+
+    #: Навигация: «‹ Назад» слева, «…» справа — без них экран не
+    #: читается как экран приложения.
+    draw.text((22, 78), "‹", font=font(34), fill=IOS_BLUE, anchor="lm")
+    draw.text((40, 79), "Назад", font=font(18), fill=IOS_BLUE, anchor="lm")
+    for i in range(3):
+        draw.ellipse((width - 44 + i * 10, 76, width - 40 + i * 10, 80), fill=IOS_BLUE)
+
+    avatar_d = 104
+    top = 110
+    if avatar is not None:
+        plate = avatar.convert("RGB").resize((avatar_d, avatar_d), Image.LANCZOS)
+        mask = Image.new("L", (avatar_d * 4, avatar_d * 4), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, avatar_d * 4 - 1, avatar_d * 4 - 1), fill=255)
+        screen.paste(plate, ((width - avatar_d) // 2, top),
+                     mask.resize((avatar_d, avatar_d), Image.LANCZOS))
+    else:
+        draw.ellipse(((width - avatar_d) // 2, top,
+                      (width + avatar_d) // 2, top + avatar_d), fill=(58, 58, 60))
+
+    name_y = top + avatar_d + 34
+    draw.text((width / 2, name_y), name, font=font(25), fill=INK, anchor="mm")
+    draw.text((width / 2, name_y + 28), "был(а) недавно", font=font(15),
+              fill=IOS_GRAY, anchor="mm")
+
+    #: Ряд действий — четыре карточки, как в профиле на iOS.
+    row_y = name_y + 56
+    labels = ("Сообщение", "Позвонить", "Видео", "Ещё")
+    pad, gap = 14, 8
+    cell = (width - pad * 2 - gap * 3) // 4
+    for i, label in enumerate(labels):
+        x = pad + i * (cell + gap)
+        draw.rounded_rectangle((x, row_y, x + cell, row_y + 62), radius=12, fill=IOS_CARD)
+        cx = x + cell / 2
+        draw.ellipse((cx - 8, row_y + 14, cx + 8, row_y + 30), outline=IOS_BLUE, width=2)
+        draw.text((cx, row_y + 47), label, font=font(11), fill=IOS_BLUE, anchor="mm")
+
+    #: Вкладки. Активны «Публикации» — именно там и живёт стенка.
+    tabs_y = row_y + 84
+    tabs = ("Публикации", "Медиа", "Файлы", "Ссылки")
+    x = 18
+    for i, tab in enumerate(tabs):
+        w = draw.textlength(tab, font=font(15))
+        draw.text((x, tabs_y), tab, font=font(15),
+                  fill=INK if i == 0 else IOS_GRAY, anchor="lm")
+        if i == 0:
+            draw.rounded_rectangle((x, tabs_y + 16, x + w, tabs_y + 19), radius=2, fill=INK)
+        x += w + 26
+    return tabs_y + 30
 
 
 def profile_screen(source: bytes, parts: int, width: int, name: str,
                    frame_index: int | None = None, colour_index: int = 4) -> Image.Image:
-    """Экран профиля: аватарка, имя и стенка под ними."""
-    height = round(width * 2.06)
-    screen = Image.new("RGB", (width, height), (14, 16, 24))
+    """Скриншот профиля со стенкой — как его снял бы владелец."""
+    screen = Image.new("RGB", (SCREEN_W, SCREEN_H), IOS_BG)
+    avatar = Image.open(io.BytesIO(frames_mod.apply(source, colour_index,
+                                                    24 if frame_index is None else frame_index)))
+    grid_top = _profile_chrome(screen, name, avatar)
+
+    gap = 2
+    grid = wall_grid(source, parts, SCREEN_W, gap, seam=IOS_BG)
+    #: Сетка уходит за нижний край — так и выглядит настоящий скриншот,
+    #: аккуратно уместившаяся сетка сразу читается как макет.
+    screen.paste(grid, (0, grid_top))
+
+    draw = ImageDraw.Draw(screen, "RGBA")
+    draw.rounded_rectangle((SCREEN_W / 2 - 70, SCREEN_H - 12, SCREEN_W / 2 + 70, SCREEN_H - 7),
+                           radius=3, fill=(255, 255, 255, 190))
+    return screen
+
+
+def blank_screen(name: str = "@nudick") -> Image.Image:
+    """Тот же профиль, но с обычной лентой — половина карточки «было/стало»."""
+    screen = Image.new("RGB", (SCREEN_W, SCREEN_H), IOS_BG)
+    grid_top = _profile_chrome(screen, name, None)
     draw = ImageDraw.Draw(screen)
-
-    avatar_d = round(width * 0.30)
-    if frame_index is None:
-        avatar = Image.open(io.BytesIO(frames_mod.apply(source, colour_index, 24)))
-    else:
-        avatar = Image.open(io.BytesIO(frames_mod.apply(source, colour_index, frame_index)))
-    avatar = avatar.convert("RGB").resize((avatar_d, avatar_d), Image.LANCZOS)
-    circle = Image.new("L", (avatar_d, avatar_d), 0)
-    ImageDraw.Draw(circle).ellipse((0, 0, avatar_d - 1, avatar_d - 1), fill=255)
-    screen.paste(avatar, ((width - avatar_d) // 2, round(width * 0.12)), circle)
-
-    name_y = round(width * 0.12) + avatar_d + round(width * 0.075)
-    draw.text((width / 2, name_y), name, font=font(round(width * 0.072)), fill=INK, anchor="mm")
-    draw.text((width / 2, name_y + round(width * 0.075)), "был(а) недавно",
-              font=font(round(width * 0.045)), fill=DIM, anchor="mm")
-
-    gap = max(2, round(width * 0.012))
-    box_w = width - gap * 2
-    grid = wall_grid(source, parts, box_w, gap)
-    screen.paste(grid, (gap, name_y + round(width * 0.14)))
+    gap = 2
+    cell = (SCREEN_W - gap * 2) // 3
+    cell_h = round(cell * slicer.CELL_H / slicer.CELL_W)
+    tones = [(38, 38, 42), (30, 30, 34), (46, 46, 50)]
+    for row in range(4):
+        for col in range(3):
+            x = col * (cell + gap)
+            y = grid_top + row * (cell_h + gap)
+            draw.rectangle((x, y, x + cell, y + cell_h), fill=tones[(row + col) % 3])
+    draw.rounded_rectangle((SCREEN_W / 2 - 70, SCREEN_H - 12, SCREEN_W / 2 + 70, SCREEN_H - 7),
+                           radius=3, fill=(255, 255, 255, 190))
     return screen
 
 
@@ -320,10 +470,10 @@ def make_welcome(source: bytes) -> Image.Image:
     draw = ImageDraw.Draw(card, "RGBA")
     title_plate(draw, "Стенка из сторис", top=44, size=58)
 
-    screen = profile_screen(source, 9, 430, OWNER)
-    shell = phone(screen)
-    shell = shell.resize((round(shell.width * 0.94), round(shell.height * 0.94)), Image.LANCZOS)
-    card.paste(shell, ((W - shell.width) // 2, 196), shell)
+    shell = phone(profile_screen(source, 9, SCREEN_W, OWNER))
+    scale = 920 / shell.height
+    shell = shell.resize((round(shell.width * scale), round(shell.height * scale)), Image.LANCZOS)
+    card.paste(shell, ((W - shell.width) // 2, 182), shell)
 
     draw = ImageDraw.Draw(card, "RGBA")
     #: Подпись в плашке, а не поверх градиента: внизу фон самый светлый,
@@ -345,47 +495,33 @@ def make_about(source: bytes) -> Image.Image:
     draw = ImageDraw.Draw(card, "RGBA")
     title_plate(draw, "Было / стало")
 
-    plain = Image.new("RGB", (430, round(430 * 2.06)), (14, 16, 24))
-    pdraw = ImageDraw.Draw(plain)
-    avatar_d = round(430 * 0.30)
-    pdraw.ellipse(
-        ((430 - avatar_d) // 2, round(430 * 0.12),
-         (430 - avatar_d) // 2 + avatar_d, round(430 * 0.12) + avatar_d),
-        fill=(46, 52, 66),
-    )
-    pdraw.text((215, round(430 * 0.12) + avatar_d + 32), "обычный профиль",
-               font=font(30), fill=(150, 162, 184), anchor="mm")
-    gap, box = 5, 420
-    cell = (box - gap * 2) // 3
-    cell_h = round(cell * slicer.CELL_H / slicer.CELL_W)
-    top = round(430 * 0.12) + avatar_d + 60
-    tones = [(38, 42, 54), (30, 34, 46), (46, 50, 62)]
-    for row in range(3):
-        for col in range(3):
-            pdraw.rectangle(
-                (gap + col * (cell + gap), top + row * (cell_h + gap),
-                 gap + col * (cell + gap) + cell, top + row * (cell_h + gap) + cell_h),
-                fill=tones[(row + col) % 3],
-            )
-
     shells = []
-    for inner in (plain, profile_screen(source, 9, 430, OWNER)):
+    for inner in (blank_screen(OWNER), profile_screen(source, 9, SCREEN_W, OWNER)):
         shell = phone(inner)
+        scale = 740 / shell.height
         shells.append(
-            shell.resize((round(shell.width * 0.74), round(shell.height * 0.74)), Image.LANCZOS)
+            shell.resize((round(shell.width * scale), round(shell.height * scale)), Image.LANCZOS)
         )
-    span = shells[0].width * 2 + 76
+    gap = 64
+    span = shells[0].width * 2 + gap
     for index, shell in enumerate(shells):
-        card.paste(shell, ((W - span) // 2 + index * (shell.width + 76), 208), shell)
+        card.paste(shell, ((W - span) // 2 + index * (shell.width + gap), 214), shell)
 
     draw = ImageDraw.Draw(card, "RGBA")
+    for index, label in enumerate(("обычная лента", "стенка")):
+        cx = (W - span) // 2 + index * (shells[0].width + gap) + shells[0].width / 2
+        w = draw.textlength(label, font=font(28))
+        draw.rounded_rectangle((cx - w / 2 - 22, 966, cx + w / 2 + 22, 1020),
+                               radius=26, fill=PLATE + (PLATE_ALPHA,))
+        draw.text((cx, 993), label, font=font(28), fill=INK, anchor="mm")
+
+    #: Две строки, а не четыре: плашка кончается на 1216, четвёртая
+    #: строка ложилась уже на градиент под ней.
     chip(
-        draw, (60, 1000, W - 60, 1216), "Что меняется",
+        draw, (60, 1046, W - 60, 1216), "Что меняется",
         [
-            "Сетка профиля складывает истории",
-            "в одно полотно — если нарезать",
-            "правильно. Порядок публикации",
-            "бот берёт на себя.",
+            "Сетка профиля складывает истории в одно",
+            "полотно. Порядок публикации бот берёт на себя.",
         ],
     )
     footer(card)
