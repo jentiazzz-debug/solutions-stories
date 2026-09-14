@@ -22,12 +22,27 @@ SECOND_BOT = "@emojimakerobot"
 BRAND = "Solutions Stories"
 
 
+def plural(count: int, one: str, few: str, many: str) -> str:
+    """Русские формы числительного.
+
+    Без этого бот здоровается фразой «у тебя 1 бесплатных генераций» —
+    первое же сообщение выглядит как машинный перевод, а стартовый экран
+    решает, останется человек или закроет чат.
+    """
+    tail = abs(count) % 100
+    if 11 <= tail <= 14:
+        return many
+    tail %= 10
+    if tail == 1:
+        return one
+    if 2 <= tail <= 4:
+        return few
+    return many
+
+
 def start(first_name: str, credits: int) -> str:
-    tail = (
-        f"\n\n🎁 У тебя <b>{credits}</b> бесплатных генераций — хватит попробовать."
-        if credits
-        else ""
-    )
+    word = plural(credits, "бесплатная генерация", "бесплатные генерации", "бесплатных генераций")
+    tail = f"\n\n🎁 У тебя <b>{credits}</b> {word} — хватит попробовать." if credits else ""
     return (
         f"Привет, {first_name}! 👋\n\n"
         f"<b>{BRAND}</b> режет любую картинку на стенку из сторис, "
