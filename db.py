@@ -55,6 +55,16 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 CREATE INDEX IF NOT EXISTS payments_at ON payments (at);
 
+CREATE TABLE IF NOT EXISTS grants (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    at       INTEGER NOT NULL,
+    admin_id INTEGER NOT NULL,
+    user_id  INTEGER NOT NULL,
+    amount   INTEGER NOT NULL,
+    balance  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS grants_at ON grants (at);
+
 CREATE TABLE IF NOT EXISTS broadcasts (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     at       INTEGER NOT NULL,
@@ -240,6 +250,41 @@ async def add_credits(user_id: int, count: int) -> int:
     return await _scalar("SELECT credits FROM users WHERE id = ?", (user_id,))
 
 
+async def set_credits(user_id: int, value: int) -> int:
+    """Выставить баланс ровно. Ниже нуля не опускаем."""
+    value = max(0, value)
+    await _run("UPDATE users SET credits = ? WHERE id = ?", (value, user_id))
+    return value
+
+
+async def log_grant(admin_id: int, user_id: int, amount: int, balance: int) -> None:
+    """Журнал выдач.
+
+    Бесплатное, выданное руками, — это деньги, которых бот не получит.
+    Без журнала через месяц не ответить, кто и сколько раздал, а спорят
+    об этом всегда задним числом.
+    """
+    await _run(
+        "INSERT INTO grants (at, admin_id, user_id, amount, balance) VALUES (?, ?, ?, ?, ?)",
+        (now(), admin_id, user_id, amount, balance),
+    )
+
+
+async def last_grants(limit: int = 15) -> list[aiosqlite.Row]:
+    return await _all(
+        """
+        SELECT g.at, g.amount, g.balance, g.admin_id, u.username, u.first_name, u.id
+        FROM grants g LEFT JOIN users u ON u.id = g.user_id
+        ORDER BY g.at DESC LIMIT ?
+        """,
+        (limit,),
+    )
+
+
+async def granted_total() -> int:
+    return await _scalar("SELECT COALESCE(SUM(amount), 0) FROM grants WHERE amount > 0")
+
+
 async def spend_credit(user_id: int) -> bool:
     """Списать одну бесплатную генерацию.
 
@@ -318,6 +363,8 @@ async def overview() -> dict[str, Any]:
             "SELECT COALESCE(SUM(stars), 0) FROM payments WHERE at >= ?", (week,)
         ),
         "buyers": await _scalar("SELECT COUNT(DISTINCT user_id) FROM payments"),
+        "granted": await granted_total(),
+        "credits_left": await _scalar("SELECT COALESCE(SUM(credits), 0) FROM users"),
         "referred": await _scalar("SELECT COUNT(*) FROM users WHERE ref_by IS NOT NULL"),
         "referred_active": await _scalar(
             "SELECT COUNT(*) FROM users WHERE ref_by IS NOT NULL AND activated = 1"

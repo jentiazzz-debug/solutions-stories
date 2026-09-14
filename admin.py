@@ -13,7 +13,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+)
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -22,6 +26,7 @@ from aiogram.types import CallbackQuery, Message
 import config
 import db
 import keyboards as kb
+import texts
 
 router = Router(name="admin")
 logger = logging.getLogger("stories.admin")
@@ -38,6 +43,42 @@ class Cast(StatesGroup):
 
 class Lookup(StatesGroup):
     query = State()
+
+
+class Grant(StatesGroup):
+    query = State()
+
+
+async def _apply_grant(bot: Bot, admin_id: int, user_id: int, amount: int,
+                       exact: bool = False) -> int:
+    """Начислить или выставить генерации и сказать об этом человеку.
+
+    Молча менять баланс нельзя: человек видит только «бесплатных: N» в
+    меню и решит, что бот сам себе прибавил.
+    """
+    balance = (
+        await db.set_credits(user_id, amount) if exact
+        else await db.add_credits(user_id, amount)
+    )
+    await db.log_grant(admin_id, user_id, amount, balance)
+    if not exact and amount > 0:
+        #: «Начислили генераций: 3» вместо «начислили 3 бесплатных
+        #: генерации»: прилагательное пришлось бы склонять отдельно от
+        #: существительного, а двоеточие снимает вопрос целиком.
+        note = f"🎁 Тебе начислили бесплатных генераций: <b>{amount}</b>."
+    elif not exact:
+        note = None
+    else:
+        note = f"🎁 Твой баланс бесплатных генераций: <b>{balance}</b>."
+    if note:
+        word = texts.plural(balance, "генерация", "генерации", "генераций")
+        try:
+            await bot.send_message(user_id, f"{note}\nВсего: <b>{balance}</b> {word}.")
+        except (TelegramForbiddenError, TelegramBadRequest):
+            #: Человек заблокировал бота. Баланс всё равно начислен —
+            #: увидит, когда вернётся.
+            logger.info("выдачу не доставили: %s", user_id)
+    return balance
 
 
 router.message.filter(F.from_user.id.in_(config.ADMIN_IDS))
@@ -94,6 +135,8 @@ def _stats_text(data: dict) -> str:
         f"Платили: <b>{data['buyers']}</b> из {data['started']} "
         f"(<b>{_pct(data['buyers'], data['started'])}</b>)",
         f"Средний чек: <b>{check}</b> ⭐ · на человека: <b>{arpu}</b> ⭐",
+        f"Выдано руками: <b>{data['granted']}</b> · на балансах лежит: "
+        f"<b>{data['credits_left']}</b>",
         "",
         f"🔗 По рефералкам: <b>{data['referred']}</b>, "
         f"активных <b>{data['referred_active']}</b> "
@@ -216,7 +259,72 @@ async def on_lookup(message: Message, state: FSMContext) -> None:
             f"активных <b>{facts['refs_active']}</b>",
             f"Пришёл по ссылке: {row['ref_by'] or '—'}",
         )),
+        reply_markup=kb.user_card(int(row["id"])),
+    )
+
+
+@router.callback_query(F.data == "adm:grant")
+async def cb_grant(callback: CallbackQuery, state: FSMContext) -> None:
+    total = await db.granted_total()
+    await state.set_state(Grant.query)
+    await callback.message.edit_text(
+        "🎁 <b>Выдать генерации</b>\n\n"
+        "Пришли одной строкой:\n"
+        "<code>@username 3</code> — начислить три\n"
+        "<code>123456789 -1</code> — списать одну\n"
+        "<code>@username =0</code> — выставить баланс ровно\n\n"
+        f"Всего выдано руками: <b>{total}</b>",
+        reply_markup=kb.admin_cancel(),
+    )
+    await callback.answer()
+
+
+@router.message(Grant.query)
+async def on_grant(message: Message, state: FSMContext) -> None:
+    parts = (message.text or "").split()
+    if len(parts) != 2:
+        await message.answer("Нужно две части: кому и сколько. Пример: <code>@vasya 3</code>")
+        return
+
+    who, raw = parts
+    exact = raw.startswith("=")
+    raw = raw.lstrip("=")
+    try:
+        amount = int(raw)
+    except ValueError:
+        await message.answer("Второе значение должно быть числом.")
+        return
+
+    row = await db.find_user(who)
+    if row is None:
+        await message.answer(
+            "Не нашёл. Юзернейм запоминается только после захода в бота — "
+            "попробуй числовой id.",
+        )
+        return
+
+    await state.clear()
+    balance = await _apply_grant(message.bot, message.from_user.id, int(row["id"]),
+                                 amount, exact)
+    verb = "выставлено" if exact else ("начислено" if amount > 0 else "списано")
+    await message.answer(
+        f"✅ {_who(row)} — {verb} <b>{abs(amount)}</b>.\n"
+        f"Баланс: <b>{balance}</b>",
         reply_markup=kb.admin(),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:give:"))
+async def cb_give(callback: CallbackQuery) -> None:
+    _, _, user_id, amount = callback.data.split(":")
+    balance = await _apply_grant(callback.bot, callback.from_user.id,
+                                 int(user_id), int(amount))
+    await callback.answer(f"Баланс: {balance}", show_alert=False)
+    #: Дописываем итог к карточке, а не перерисовываем её целиком: так
+    #: видно всю историю нажатий за одну сессию поддержки.
+    await callback.message.edit_text(
+        f"{callback.message.html_text}\n\n🎁 {int(amount):+d} → баланс <b>{balance}</b>",
+        reply_markup=kb.user_card(int(user_id)),
     )
 
 

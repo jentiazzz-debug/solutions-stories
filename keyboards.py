@@ -136,7 +136,10 @@ def admin() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🏆 Топы", callback_data="adm:tops"),
                 InlineKeyboardButton(text="💸 Платежи", callback_data="adm:pays"),
             ],
-            [InlineKeyboardButton(text="👤 Найти человека", callback_data="adm:find")],
+            [
+                InlineKeyboardButton(text="👤 Найти человека", callback_data="adm:find"),
+                InlineKeyboardButton(text="🎁 Выдать", callback_data="adm:grant"),
+            ],
             [InlineKeyboardButton(text="📣 Рассылка", callback_data="adm:cast")],
             [InlineKeyboardButton(text="🧾 История рассылок", callback_data="adm:history")],
         ]
@@ -154,6 +157,25 @@ def admin_refresh(target: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"adm:{target}")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm:main")],
+        ]
+    )
+
+
+def user_card(user_id: int) -> InlineKeyboardMarkup:
+    """Быстрая выдача прямо из карточки человека.
+
+    Кнопки с готовыми числами: в поддержке выдают почти всегда одну-три
+    генерации, и набирать команду руками ради этого — лишний шаг.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="+1", callback_data=f"adm:give:{user_id}:1"),
+                InlineKeyboardButton(text="+3", callback_data=f"adm:give:{user_id}:3"),
+                InlineKeyboardButton(text="+10", callback_data=f"adm:give:{user_id}:10"),
+                InlineKeyboardButton(text="−1", callback_data=f"adm:give:{user_id}:-1"),
+            ],
+            [InlineKeyboardButton(text="⬅️ В панель", callback_data="adm:main")],
         ]
     )
 
