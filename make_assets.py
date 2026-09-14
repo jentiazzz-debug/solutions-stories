@@ -325,7 +325,7 @@ def profile_screen(source: bytes, parts: int, width: int, name: str,
     """Скриншот профиля со стенкой — как его снял бы владелец."""
     screen = Image.new("RGB", (SCREEN_W, SCREEN_H), IOS_BG)
     avatar = Image.open(io.BytesIO(frames_mod.apply(source, colour_index,
-                                                    24 if frame_index is None else frame_index)))
+                                                    3 if frame_index is None else frame_index)))
     grid_top = _profile_chrome(screen, name, avatar)
 
     gap = 2
@@ -588,10 +588,10 @@ def make_frames(source: bytes) -> Image.Image:
 
     #: Золотой венок, а не чернильная маска: на тёмной аватарке тёмная
     #: маска сливается с фотографией, и рамки на витрине просто не видно.
-    hero = profile_card(source, 5, 4, "@nudick", 620, 500)
+    hero = profile_card(source, 0, 7, "@nudick", 620, 500)
     card.paste(hero, ((W - hero.width) // 2, 216), hero)
 
-    picks = [26, 28, 30, 33]
+    picks = [3, 5, 7, 1]
     size, gap = 208, 22
     start_x = (W - (size * len(picks) + gap * (len(picks) - 1))) // 2
     row_y = 800
@@ -603,8 +603,8 @@ def make_frames(source: bytes) -> Image.Image:
     chip(
         draw, (60, 1058, W - 60, 1216), "Как это работает",
         [
-            f"{frames_mod.frame_count()} рамок × {len(frames_mod.COLORS)} цветов профиля.",
-            "Фон под рамкой — цвет твоего профиля,",
+            f"{frames_mod.frame_count()} рамок × {len(frames_mod.COLORS)} фонов, включая подарочные.",
+            "Фон под рамкой — фон твоего профиля,",
             "поэтому она выглядит частью интерфейса.",
         ],
     )
