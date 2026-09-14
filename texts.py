@@ -121,7 +121,13 @@ def preview_caption(parts: int, price: int, credits: int) -> str:
     cols, rows = slicer.COLS, slicer.LAYOUTS[parts]
     head = f"🔍 Так стенка ляжет в профиль: сетка {cols}×{rows}, {parts} сторис."
     if credits:
-        return f"{head}\n\n🎁 Спишется одна бесплатная генерация (осталось {credits})."
+        #: Показываем остаток ПОСЛЕ списания, а не текущий баланс. «Осталось 1»
+        #: при единственной генерации читается как «одна ещё будет», человек
+        #: жмёт второй раз и упирается в счёт, которого не ждал.
+        return (
+            f"{head}\n\n🎁 Спишется одна бесплатная генерация — "
+            f"останется <b>{credits - 1}</b>."
+        )
     return f"{head}\n\n💫 Стоимость — <b>{price}</b> ⭐"
 
 

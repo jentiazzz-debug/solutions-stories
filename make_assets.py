@@ -367,9 +367,26 @@ def make_frames(source: bytes) -> Image.Image:
     return card
 
 
+#: Своя картинка для витрины. Положи сюда что угодно — нейросетевой
+#: постер, фотографию, арт — и заставки пересоберутся на ней. Нет файла
+#: — рисуем абстракцию кодом, чтобы сборка не падала на чистом клоне.
+CUSTOM_SOURCE = OUT / "_ai_source.png"
+
+
+def pick_source(argv: list[str]) -> bytes:
+    if len(argv) > 1:
+        return Path(argv[1]).read_bytes()
+    for candidate in (CUSTOM_SOURCE, CUSTOM_SOURCE.with_suffix(".jpg")):
+        if candidate.is_file():
+            print(f"витрина: {candidate.name}")
+            return candidate.read_bytes()
+    print("витрина: процедурная абстракция (своего файла нет)")
+    return demo_source()
+
+
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
-    source = demo_source()
+    source = pick_source(sys.argv)
     (OUT / "_demo_source.jpg").write_bytes(source)
 
     for name, build in (
