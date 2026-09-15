@@ -364,7 +364,7 @@ async def on_frames(message: Message, state: FSMContext) -> None:
 async def cb_frames_go(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(Frame.colour)
-    await state.update_data(colour=0, frame=0)
+    await state.update_data(colour=0, frame=0, tint=True)
     await _show_colour(callback.message, 0, new=True)
 
 
@@ -384,20 +384,18 @@ async def _show_colour(message: Message, index: int, new: bool = False) -> None:
 
 
 async def _show_frame(message: Message, colour: int, index: int, credits: int,
-                      new: bool = False) -> None:
+                      new: bool = False, tint: bool = True) -> None:
     total = frames.frame_count()
-    shot = await asyncio.to_thread(frames.preview, colour, index, texts.BRAND)
+    shot = await asyncio.to_thread(frames.preview, colour, index, texts.BRAND, tint)
     caption = texts.pick_frame(index + 1, total, frames.frame_name(index),
-                               config.FRAME_PRICE, credits)
+                               config.FRAME_PRICE, credits, tint)
     media = BufferedInputFile(shot, filename="frame.jpg")
+    markup = kb.carousel("frm", index + 1, total, tint)
     if new:
-        await message.answer_photo(media, caption=caption,
-                                   reply_markup=kb.carousel("frm", index + 1, total))
+        await message.answer_photo(media, caption=caption, reply_markup=markup)
         return
-    await message.edit_media(
-        InputMediaPhoto(media=media, caption=caption),
-        reply_markup=kb.carousel("frm", index + 1, total),
-    )
+    await message.edit_media(InputMediaPhoto(media=media, caption=caption),
+                             reply_markup=markup)
 
 
 @router.callback_query(F.data.startswith("col:"))
@@ -412,7 +410,8 @@ async def cb_colour(callback: CallbackQuery, state: FSMContext) -> None:
         await state.set_state(Frame.frame)
         row = await db.get_user(callback.from_user.id)
         await _show_frame(callback.message, index, int(data.get("frame", 0)),
-                          int(row["credits"]) if row else 0)
+                          int(row["credits"]) if row else 0,
+                          tint=bool(data.get("tint", True)))
         return
 
     index = (index + (1 if action == "next" else -1)) % total
@@ -427,6 +426,7 @@ async def cb_frame(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     colour = int(data.get("colour", 0))
     index = int(data.get("frame", 0))
+    tint = bool(data.get("tint", True))
     total = frames.frame_count()
 
     if action == "pick":
@@ -437,11 +437,16 @@ async def cb_frame(callback: CallbackQuery, state: FSMContext) -> None:
         )
         return
 
-    index = (index + (1 if action == "next" else -1)) % total
-    await state.update_data(frame=index)
+    if action == "tint":
+        tint = not tint
+        await state.update_data(tint=tint)
+    else:
+        index = (index + (1 if action == "next" else -1)) % total
+        await state.update_data(frame=index)
     await callback.answer()
     row = await db.get_user(callback.from_user.id)
-    await _show_frame(callback.message, colour, index, int(row["credits"]) if row else 0)
+    await _show_frame(callback.message, colour, index,
+                      int(row["credits"]) if row else 0, tint=tint)
 
 
 async def _frame_photo(message: Message, state: FSMContext) -> None:
@@ -477,7 +482,8 @@ async def _deliver_frame(message: Message, state: FSMContext, paid: int) -> None
     photo = await _download(message.bot, file_id)
     try:
         result = await asyncio.to_thread(
-            frames.apply, photo, int(data.get("colour", 0)), int(data.get("frame", 0))
+            frames.apply, photo, int(data.get("colour", 0)), int(data.get("frame", 0)),
+            bool(data.get("tint", True)),
         )
     except Exception:
         logger.exception("рамка не собралась")

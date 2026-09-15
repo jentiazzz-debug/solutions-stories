@@ -630,7 +630,7 @@ def make_about(source: bytes) -> Image.Image:
 
 
 def profile_card(avatar_src: bytes, frame_index: int, colour_index: int,
-                 name: str, width: int, height: int) -> Image.Image:
+                 name: str, width: int, height: int, tint: bool = True) -> Image.Image:
     """Карточка профиля Telegram: узор, аватарка с рамкой, имя, статус.
 
     Именно так рамку показывает конкурент — и это честно: человек видит
@@ -657,7 +657,7 @@ def profile_card(avatar_src: bytes, frame_index: int, colour_index: int,
 
     avatar_d = round(width * 0.42)
     avatar = Image.open(
-        io.BytesIO(frames_mod.apply(avatar_src, colour_index, frame_index))
+        io.BytesIO(frames_mod.apply(avatar_src, colour_index, frame_index, tint))
     ).convert("RGBA").resize((avatar_d, avatar_d), Image.LANCZOS)
     mask = Image.new("L", (avatar_d * 4, avatar_d * 4), 0)
     ImageDraw.Draw(mask).ellipse((0, 0, avatar_d * 4 - 1, avatar_d * 4 - 1), fill=255)
@@ -689,23 +689,26 @@ def make_frames(source: bytes) -> Image.Image:
 
     #: На витрину — самая нарядная из загруженных: витрина продаёт
     #: рамки, а не движок, и рисованная продаёт лучше процедурной.
-    hero = profile_card(source, 11, 7, "@nudick", 620, 500)
+    #: На витрине рамки показываем родными цветами: подгонка под фон
+    #: хороша в профиле, но здесь она гасит именно то, что продаётся.
+    hero = profile_card(source, 11, 7, "@nudick", 620, 500, tint=False)
     card.paste(hero, ((W - hero.width) // 2, 216), hero)
 
     picks = [12, 3, 5, 7]
     size, gap = 208, 22
     start_x = (W - (size * len(picks) + gap * (len(picks) - 1))) // 2
-    row_y = 800
+    row_y = 772
     for i, index in enumerate(picks):
-        shot = Image.open(io.BytesIO(frames_mod.apply(source, i * 2, index))).convert("RGB")
+        shot = Image.open(io.BytesIO(frames_mod.apply(source, i * 2, index, False))).convert("RGB")
         shot = shot.resize((size, size), Image.LANCZOS)
         card.paste(shot, (start_x + i * (size + gap), row_y))
 
     chip(
-        draw, (60, 1050, W - 60, 1050), "Как это работает",
+        draw, (60, 996, W - 60, 996), "Как это работает",
         [
             f"{frames_mod.frame_count()} рамок × {len(frames_mod.COLORS)} фонов, включая подарочные.",
             "Фон под рамкой — тот, что стоит у тебя в профиле.",
+            "Рамка умеет перекрашиваться под него одной кнопкой.",
         ],
     )
     footer(card)

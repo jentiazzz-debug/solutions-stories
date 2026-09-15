@@ -24,7 +24,7 @@ import math
 import random
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 import config
 
@@ -35,20 +35,26 @@ SIZE = 512
 SS = 3
 
 #: Фоны. Первым — подарочный Black, о нём спрашивают чаще всего.
-#: (имя, центр, край) — радиальный градиент, как у подарков Telegram.
-BACKDROPS: list[tuple[str, str, str]] = [
-    ("Чёрный", "#3A3A40", "#0B0B0D"),
-    ("Ночь", "#3B2F6B", "#120B22"),
-    ("Графит", "#5A5D66", "#232529"),
-    ("Красный", "#F08A6A", "#B0342E"),
-    ("Оранжевый", "#F7C04A", "#C25E12"),
-    ("Золото", "#F0D080", "#7A5A12"),
-    ("Зелёный", "#8FDC6A", "#1F7A2E"),
-    ("Бирюзовый", "#7FE3DC", "#136C7E"),
-    ("Синий", "#7FC4F0", "#17508F"),
-    ("Фиолетовый", "#C79BF5", "#4B2280"),
-    ("Розовый", "#FFB0C8", "#A82458"),
-    ("Белый", "#FFFFFF", "#C8CDD6"),
+#: (имя, центр, край, акцент) — центр и край дают радиальный градиент,
+#: как у подарков Telegram; акцент — цвет, в который перекрашивается
+#: рамка под этот фон.
+#:
+#: Акцент не «светлая версия фона», а цвет, который на этом фоне ВИДНО.
+#: На тёмных он светлый, на белом — наоборот тёмный: перекрась рамку в
+#: светлое на белом фоне, и она исчезнет.
+BACKDROPS: list[tuple[str, str, str, str]] = [
+    ("Чёрный", "#3A3A40", "#0B0B0D", "#D6D8E2"),
+    ("Ночь", "#3B2F6B", "#120B22", "#B49CFF"),
+    ("Графит", "#5A5D66", "#232529", "#DDE1EA"),
+    ("Красный", "#F08A6A", "#B0342E", "#FFC6B0"),
+    ("Оранжевый", "#F7C04A", "#C25E12", "#FFDE9A"),
+    ("Золото", "#F0D080", "#7A5A12", "#FFE9AE"),
+    ("Зелёный", "#8FDC6A", "#1F7A2E", "#CBF5A4"),
+    ("Бирюзовый", "#7FE3DC", "#136C7E", "#B6F5EE"),
+    ("Синий", "#7FC4F0", "#17508F", "#B9E2FF"),
+    ("Фиолетовый", "#C79BF5", "#4B2280", "#E2CCFF"),
+    ("Розовый", "#FFB0C8", "#A82458", "#FFD6E2"),
+    ("Белый", "#FFFFFF", "#C8CDD6", "#5C6478"),
 ]
 
 #: Старое имя. Хендлеры и сборщик заставок обращаются к COLORS.
@@ -75,7 +81,7 @@ def _mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[in
 
 def backdrop(index: int, size: int) -> Image.Image:
     """Радиальный градиент подарочного фона."""
-    _, centre_hex, edge_hex = BACKDROPS[index % len(BACKDROPS)]
+    _, centre_hex, edge_hex, _accent = BACKDROPS[index % len(BACKDROPS)]
     centre, edge = _rgb(centre_hex), _rgb(edge_hex)
     #: Считаем на маленьком холсте и растягиваем: попиксельный радиал на
     #: 512×512 — это четверть миллиона вызовов на каждую аватарку.
@@ -102,6 +108,39 @@ def _is_light(index: int) -> bool:
     """Светлый ли фон — от этого зависит цвет теней и подписей."""
     centre = _rgb(BACKDROPS[index % len(BACKDROPS)][1])
     return sum(centre) / 3 > 168
+
+
+#: Насколько сильно рамка уходит в цвет фона. Не единица: при полной
+#: перекраске майнкрафт-венок теряет и зелень, и фиолет, и от рисунка
+#: остаётся одноцветный барельеф. 0.72 сохраняет фактуру и материал,
+#: но палитра уже читается как общая с фоном.
+TINT_STRENGTH = 0.72
+
+
+def tint_layer(layer: Image.Image, backdrop_idx: int,
+               strength: float = TINT_STRENGTH) -> Image.Image:
+    """Перекрасить рамку в палитру фона, сохранив светотень.
+
+    Работает по яркости, а не по цвету: тёмные места рисунка уходят в
+    тень акцента, средние — в сам акцент, блики — почти в белый. Поэтому
+    объём, тени и блики, ради которых всё и рисовалось, остаются на
+    месте — меняется только палитра.
+    """
+    if strength <= 0:
+        return layer
+    accent = _rgb(BACKDROPS[backdrop_idx % len(BACKDROPS)][3])
+    shadow = _mix(accent, (0, 0, 0), 0.68)
+    highlight = _mix(accent, (255, 255, 255), 0.62)
+
+    rgb = layer.convert("RGB")
+    #: colorize с тремя точками: без средней тёмная и светлая половины
+    #: сходятся линейно, и рамка становится плоской.
+    painted = ImageOps.colorize(
+        rgb.convert("L"), black=shadow, white=highlight, mid=accent
+    )
+    out = Image.blend(rgb, painted, strength).convert("RGBA")
+    out.putalpha(layer.split()[-1])
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -659,7 +698,7 @@ def _placeholder(side: int) -> Image.Image:
 
 
 def _compose(photo: Image.Image | None, backdrop_idx: int, frame_idx: int,
-             size: int, with_backdrop: bool = True) -> Image.Image:
+             size: int, with_backdrop: bool = True, tint: bool = True) -> Image.Image:
     #: with_backdrop=False нужен превью: там аватарка ложится на фон
     #: самой карточки. Со своим квадратом фона её радиальный градиент не
     #: совпадает с градиентом карточки, и по краю квадрата виден шов.
@@ -676,7 +715,10 @@ def _compose(photo: Image.Image | None, backdrop_idx: int, frame_idx: int,
     inner.putalpha(_circle_mask(avatar_d))
     offset = (size - avatar_d) // 2
     canvas.alpha_composite(inner, (offset, offset))
-    canvas.alpha_composite(_frame_layer(frame_idx, size))
+    ring = _frame_layer(frame_idx, size)
+    if tint:
+        ring = tint_layer(ring, backdrop_idx)
+    canvas.alpha_composite(ring)
     return canvas
 
 
@@ -710,7 +752,8 @@ def _font(size: int) -> tuple[ImageFont.FreeTypeFont | ImageFont.ImageFont, bool
         return ImageFont.load_default(), False
 
 
-def preview(backdrop_idx: int, frame_idx: int | None, title: str) -> bytes:
+def preview(backdrop_idx: int, frame_idx: int | None, title: str,
+            tint: bool = True) -> bytes:
     """Карточка «как это сядет в профиль»: фон, аватарка, имя, статус."""
     card_w, card_h = 720, 720
     card = backdrop(backdrop_idx, card_h).resize((card_w, card_h), Image.BICUBIC).convert("RGBA")
@@ -721,7 +764,8 @@ def preview(backdrop_idx: int, frame_idx: int | None, title: str) -> bytes:
         blank.putalpha(_circle_mask(blank.width))
         avatar.alpha_composite(blank, (84, 84))
     else:
-        avatar = _compose(None, backdrop_idx, frame_idx, 420, with_backdrop=False)
+        avatar = _compose(None, backdrop_idx, frame_idx, 420,
+                          with_backdrop=False, tint=tint)
     card.alpha_composite(avatar, ((card_w - 420) // 2, 84))
 
     draw = ImageDraw.Draw(card)
@@ -739,10 +783,11 @@ def preview(backdrop_idx: int, frame_idx: int | None, title: str) -> bytes:
     return buf.getvalue()
 
 
-def apply(photo_data: bytes, backdrop_idx: int, frame_idx: int) -> bytes:
+def apply(photo_data: bytes, backdrop_idx: int, frame_idx: int,
+          tint: bool = True) -> bytes:
     """Готовая аватарка: фото в круге, венок вокруг, фон профиля в углах."""
     with Image.open(io.BytesIO(photo_data)) as src:
-        result = _compose(src.convert("RGB"), backdrop_idx, frame_idx, SIZE)
+        result = _compose(src.convert("RGB"), backdrop_idx, frame_idx, SIZE, tint=tint)
     buf = io.BytesIO()
     #: PNG: у аватарки видно каждый артефакт по краю венка.
     result.convert("RGB").save(buf, format="PNG", optimize=True)

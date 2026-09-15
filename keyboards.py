@@ -78,24 +78,35 @@ def confirm(parts_count: int, free: bool) -> InlineKeyboardMarkup:
     )
 
 
-def carousel(kind: str, index: int, total: int) -> InlineKeyboardMarkup:
+def carousel(kind: str, index: int, total: int,
+             tint: bool | None = None) -> InlineKeyboardMarkup:
     """Листалка цвета и рамки.
 
     Номер в callback_data не кладём: экран всё равно перерисовывается
     целиком, а без номера кнопки не протухают, если человек вернулся к
     старому сообщению через неделю.
+
+    tint=None — переключателя нет (экран выбора фона). На экране рамки
+    он показывает текущее состояние прямо в подписи: отдельная строка
+    «сейчас включено» занимала бы место, а кнопка и так его называет.
     """
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="⬅️", callback_data=f"{kind}:prev"),
-                InlineKeyboardButton(text=f"{index}/{total}", callback_data="noop"),
-                InlineKeyboardButton(text="➡️", callback_data=f"{kind}:next"),
-            ],
-            [InlineKeyboardButton(text="✅ Выбрать", callback_data=f"{kind}:pick")],
-            [InlineKeyboardButton(text="✖️ Отмена", callback_data="cut:cancel")],
-        ]
-    )
+    rows = [
+        [
+            InlineKeyboardButton(text="⬅️", callback_data=f"{kind}:prev"),
+            InlineKeyboardButton(text=f"{index}/{total}", callback_data="noop"),
+            InlineKeyboardButton(text="➡️", callback_data=f"{kind}:next"),
+        ],
+    ]
+    if tint is not None:
+        rows.append([
+            InlineKeyboardButton(
+                text="🎨 Под фон: вкл" if tint else "🎨 Под фон: выкл",
+                callback_data=f"{kind}:tint",
+            )
+        ])
+    rows.append([InlineKeyboardButton(text="✅ Выбрать", callback_data=f"{kind}:pick")])
+    rows.append([InlineKeyboardButton(text="✖️ Отмена", callback_data="cut:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def frames_start() -> InlineKeyboardMarkup:

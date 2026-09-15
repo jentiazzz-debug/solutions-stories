@@ -187,15 +187,22 @@ def pick_color(index: int, total: int, name: str) -> str:
     )
 
 
-def pick_frame(index: int, total: int, name: str, price: int, credits: int) -> str:
+def pick_frame(index: int, total: int, name: str, price: int, credits: int,
+               tint: bool = True) -> str:
     tail = (
         f"🎁 Бесплатных генераций: <b>{credits}</b>"
         if credits
         else f"💫 Стоимость — <b>{price}</b> ⭐"
     )
+    mode = (
+        "🎨 Рамка перекрашена под фон — палитра общая с профилем."
+        if tint
+        else "🎨 Родные цвета рамки. Кнопкой ниже можно подогнать под фон."
+    )
     return (
         f"🖼 Рамка — <b>{name}</b> ({index}/{total})\n\n"
-        f"Листай кнопками, потом нажми «Выбрать» и пришли фото.\n\n{tail}"
+        f"Листай кнопками, потом нажми «Выбрать» и пришли фото.\n\n"
+        f"{mode}\n\n{tail}"
     )
 
 
