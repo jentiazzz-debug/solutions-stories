@@ -146,7 +146,7 @@ async def on_start(message: Message, command: CommandObject, state: FSMContext) 
     credits = int(row["credits"]) if row else 0
     await message.answer(texts.start(html.escape(user.first_name or "друг"), credits),
                          reply_markup=kb.menu())
-    await _send_asset(message, "welcome.jpg", texts.about(), kb.welcome())
+    await _send_asset(message, "welcome.jpg", texts.welcome_caption(), kb.welcome())
 
 
 @router.message(F.text == kb.ABOUT)
