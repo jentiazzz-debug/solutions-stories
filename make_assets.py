@@ -503,17 +503,41 @@ def footer(card: Image.Image, text: str = HANDLE, colour=(120, 132, 154)) -> Non
     )
 
 
+def wrap(draw: ImageDraw.ImageDraw, text: str, face, width: float) -> list[str]:
+    """Разбить строку по словам так, чтобы влезла в заданную ширину."""
+    if not text or draw.textlength(text, font=face) <= width:
+        return [text]
+    out, line = [], ""
+    for word in text.split(" "):
+        probe = f"{line} {word}".strip()
+        if line and draw.textlength(probe, font=face) > width:
+            out.append(line)
+            line = word
+        else:
+            line = probe
+    if line:
+        out.append(line)
+    return out
+
+
 def chip(draw: ImageDraw.ImageDraw, box, title: str, lines: list[str],
-         accent=None, plate=None) -> int:
+         accent=None, plate=None, size: int = 31, step: int = 46) -> int:
     """Скруглённая плашка с заголовком и строками.
 
     Высота считается от содержимого, а не задаётся руками: заданная
     руками уже дважды оказывалась короче текста, и последние строки
     уезжали на градиент под плашкой. Четвёртый элемент box теперь
     только минимум высоты.
+
+    Длинные строки переносятся по словам. Раньше перенос был расставлен
+    руками — и держался ровно до смены шрифта: DejaVu шире ариала, и
+    те же строки полезли за край плашки. Пустая строка по-прежнему
+    означает отбивку между абзацами.
     """
     x0, y0, x1, y1 = box
-    top_pad, line_step, bottom_pad = 88, 46, 30
+    top_pad, line_step, bottom_pad = 88, step, 30
+    body = font(size)
+    lines = [part for line in lines for part in wrap(draw, line, body, x1 - x0 - 68)]
     needed = top_pad + line_step * len(lines) + bottom_pad
     bottom = max(y1, y0 + needed)
     draw.rounded_rectangle((x0, y0, x1, bottom), radius=RADIUS,
@@ -521,7 +545,7 @@ def chip(draw: ImageDraw.ImageDraw, box, title: str, lines: list[str],
     draw.text((x0 + 34, y0 + 28), title, font=font(34), fill=accent or ACCENT)
     y = y0 + top_pad
     for line in lines:
-        draw.text((x0 + 34, y), line, font=font(31), fill=INK)
+        draw.text((x0 + 34, y), line, font=body, fill=INK)
         y += line_step
     return int(bottom)
 
@@ -566,7 +590,7 @@ def manual_card(source: bytes, name: str = OWNER) -> Image.Image:
     #: тянет взгляд на себя, а смотреть тут надо на номера.
     inner = profile_screen(source, 9, SCREEN_W, name, colour_index=0, numbers=True)
     shell = phone(inner)
-    scale = 880 / shell.height
+    scale = 840 / shell.height
     shell = tilt(
         shell.resize((round(shell.width * scale), round(shell.height * scale)), Image.LANCZOS),
         -4,
@@ -575,35 +599,31 @@ def manual_card(source: bytes, name: str = OWNER) -> Image.Image:
     card.paste(shell, (26, 232), shell)
 
     draw = ImageDraw.Draw(card, "RGBA")
-    col_x, col_r = 546, W - 60
+    #: Кегль в плашках мельче основного: колонка узкая, а текста тут
+    #: втрое больше, чем на витринных карточках.
+    col_x, col_r, small = 520, W - 60, dict(size=28, step=42)
 
     ratios = [f"{w}:{h}   →   {parts} сторис"
               for parts in sorted(slicer.LAYOUTS)
               for w, h in [slicer.ideal_ratio(parts)]]
     bottom = chip(draw, (col_x, 200, col_r, 200), "Идеальные пропорции", ratios,
-                  accent=MONO_ACCENT, plate=MONO_PLATE)
+                  accent=MONO_ACCENT, plate=MONO_PLATE, **small)
 
     bottom = chip(
         draw, (col_x, bottom + 28, col_r, bottom + 28), "Порядок публикации",
         [
-            "Публикуй файлы подряд,",
-            "сверху вниз, по одному.",
+            "Публикуй файлы подряд, сверху вниз, по одному.",
             "",
-            "Первый — правый нижний",
-            "угол. Последний —",
-            "левый верхний.",
+            "Первый — правый нижний угол. Последний — левый верхний.",
         ],
-        accent=MONO_ACCENT, plate=MONO_PLATE,
+        accent=MONO_ACCENT, plate=MONO_PLATE, **small,
     )
 
     chip(
         draw, (col_x, bottom + 28, col_r, bottom + 28), "Важно",
-        [
-            f"Фото меньше {slicer.MIN_SIDE} px по",
-            "короткой стороне на 12–15",
-            "частей бот растянет.",
-        ],
-        accent=MONO_ACCENT, plate=MONO_PLATE,
+        [f"Фото меньше {slicer.MIN_SIDE} px по короткой стороне "
+         "на 12–15 частей бот растянет."],
+        accent=MONO_ACCENT, plate=MONO_PLATE, **small,
     )
 
     footer(card, colour=MONO_FOOT)
