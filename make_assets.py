@@ -1,14 +1,18 @@
 """Сборка картинок-заставок в assets/.
 
-Почему кодом, а не нейронкой. Три из четырёх карточек — инфографика: в
-них есть пропорции, номера ячеек и порядок публикации. Ошибись генератор
-в одной цифре — и человек соберёт стенку задом наперёд, а проверить это
-на глаз нельзя. Здесь же числа берутся прямо из slicer.py, поэтому
-картинка не может разойтись с тем, что бот реально делает.
+Почему кодом, а не нейронкой. Инструкция — инфографика: в ней пропорции,
+номера ячеек и порядок публикации. Ошибись генератор в одной цифре — и
+человек соберёт стенку задом наперёд, а проверить это на глаз нельзя.
+Здесь числа берутся прямо из slicer.py, поэтому картинка не может
+разойтись с тем, что бот реально делает.
 
     python make_assets.py
 
-Шрифт нужен только на этом шаге: в репозиторий уезжают уже готовые JPEG.
+Витринные баннеры (welcome, about, frames) нарисованы руками и лежат
+готовыми файлами — скрипт их не трогает, см. HANDMADE.
+
+Модуль нужен и в рантайме: handlers зовёт personal_manual(), чтобы
+собрать инструкцию на аватарке того, кто её открыл.
 """
 
 from __future__ import annotations
@@ -45,6 +49,15 @@ PLATE_ALPHA = 232
 RADIUS = 34
 ACCENT = (126, 230, 245)
 
+#: Серо-белая палитра для инструкции. Бирюза хороша на витрине, но
+#: инструкцию человек читает, а не рассматривает: цветной градиент под
+#: плотным текстом спорит с ним за внимание и мешает на нём удержаться.
+MONO_STOPS = ((9, 9, 11), (26, 26, 30), (92, 94, 100))
+MONO_PLATE = (20, 20, 23)
+MONO_ACCENT = (228, 230, 236)
+MONO_FOOT = (122, 124, 132)
+MONO_GLOW = (188, 194, 206)
+
 BRAND = "Solutions Stories"
 
 #: Чей профиль показываем на витрине. Живой юзернейм вместо названия
@@ -75,8 +88,10 @@ def font(size: int) -> ImageFont.FreeTypeFont:
 # --------------------------------------------------------------------------
 
 
-def backdrop(width: int = W, height: int = H) -> Image.Image:
-    """Диагональный бирюзовый градиент: тёмный угол сверху, свет снизу."""
+def backdrop(width: int = W, height: int = H, stops=None,
+             glow_colour=(120, 210, 225)) -> Image.Image:
+    """Диагональный градиент: тёмный угол сверху, свет снизу."""
+    stops = stops or BG_STOPS
     small = Image.new("RGB", (64, 64))
     px = small.load()
     for y in range(64):
@@ -85,15 +100,15 @@ def backdrop(width: int = W, height: int = H) -> Image.Image:
             #: плашки ложатся на неоднородный фон — так карточка
             #: выглядит снятой, а не залитой.
             t = (x / 63) * 0.42 + (y / 63) * 0.58
-            t = min(max(t, 0.0), 1.0) * (len(BG_STOPS) - 1)
-            i = min(int(t), len(BG_STOPS) - 2)
+            t = min(max(t, 0.0), 1.0) * (len(stops) - 1)
+            i = min(int(t), len(stops) - 2)
             f = t - i
-            a, b = BG_STOPS[i], BG_STOPS[i + 1]
+            a, b = stops[i], stops[i + 1]
             px[x, y] = tuple(round(a[k] + (b[k] - a[k]) * f) for k in range(3))  # type: ignore[index]
     base = small.resize((width, height), Image.BICUBIC)
     glow = Image.new("RGB", (width, height), (0, 0, 0))
     ImageDraw.Draw(glow).ellipse(
-        (width * 0.1, height * 0.42, width * 1.1, height * 1.25), fill=(120, 210, 225)
+        (width * 0.1, height * 0.42, width * 1.1, height * 1.25), fill=glow_colour
     )
     return Image.blend(base, glow.filter(ImageFilter.GaussianBlur(210)), 0.35)
 
@@ -401,7 +416,8 @@ def _profile_chrome(screen: Image.Image, name: str, avatar: Image.Image | None) 
 
 
 def profile_screen(source: bytes, parts: int, width: int, name: str,
-                   frame_index: int | None = None, colour_index: int = 4) -> Image.Image:
+                   frame_index: int | None = None, colour_index: int = 4,
+                   numbers: bool = False) -> Image.Image:
     """Скриншот профиля со стенкой — как его снял бы владелец."""
     screen = Image.new("RGB", (SCREEN_W, SCREEN_H), IOS_BG)
     #: Номер рамки не фиксируем: их число зависит от того, сколько файлов
@@ -425,6 +441,24 @@ def profile_screen(source: bytes, parts: int, width: int, name: str,
     screen.paste(grid, (0, grid_top))
 
     draw = ImageDraw.Draw(screen, "RGBA")
+    if numbers:
+        #: Номера кладём на сам профиль, а не на отдельную схему рядом.
+        #: Инструкция про порядок публикации, и порядок понятнее всего
+        #: там, где человек его и увидит, — в своей же сетке.
+        cell = (SCREEN_W - gap * 2) // slicer.COLS
+        cell_h = round(cell * slicer.CELL_H / slicer.CELL_W)
+        left = parts
+        for row in range(slicer.LAYOUTS[parts]):
+            for col in range(slicer.COLS):
+                cx = col * (cell + gap) + cell / 2
+                cy = grid_top + row * (cell_h + gap) + cell_h / 2
+                if cy > SCREEN_H - 20:
+                    continue
+                draw.text((cx + 2, cy + 2), str(left), font=font(40),
+                          fill=(0, 0, 0, 170), anchor="mm")
+                draw.text((cx, cy), str(left), font=font(40),
+                          fill=(255, 255, 255), anchor="mm")
+                left -= 1
     draw.rounded_rectangle((SCREEN_W / 2 - 70, SCREEN_H - 12, SCREEN_W / 2 + 70, SCREEN_H - 7),
                            radius=3, fill=(255, 255, 255, 190))
     return screen
@@ -449,13 +483,14 @@ def blank_screen(name: str = "@nudick") -> Image.Image:
     return screen
 
 
-def footer(card: Image.Image, text: str = HANDLE) -> None:
+def footer(card: Image.Image, text: str = HANDLE, colour=(120, 132, 154)) -> None:
     ImageDraw.Draw(card).text(
-        (W / 2, H - 46), text, font=font(30), fill=(120, 132, 154), anchor="mm"
+        (W / 2, H - 46), text, font=font(30), fill=colour, anchor="mm"
     )
 
 
-def chip(draw: ImageDraw.ImageDraw, box, title: str, lines: list[str]) -> int:
+def chip(draw: ImageDraw.ImageDraw, box, title: str, lines: list[str],
+         accent=None, plate=None) -> int:
     """Скруглённая плашка с заголовком и строками.
 
     Высота считается от содержимого, а не задаётся руками: заданная
@@ -467,8 +502,9 @@ def chip(draw: ImageDraw.ImageDraw, box, title: str, lines: list[str]) -> int:
     top_pad, line_step, bottom_pad = 88, 46, 30
     needed = top_pad + line_step * len(lines) + bottom_pad
     bottom = max(y1, y0 + needed)
-    draw.rounded_rectangle((x0, y0, x1, bottom), radius=RADIUS, fill=PLATE + (PLATE_ALPHA,))
-    draw.text((x0 + 34, y0 + 28), title, font=font(34), fill=ACCENT)
+    draw.rounded_rectangle((x0, y0, x1, bottom), radius=RADIUS,
+                           fill=(plate or PLATE) + (PLATE_ALPHA,))
+    draw.text((x0 + 34, y0 + 28), title, font=font(34), fill=accent or ACCENT)
     y = y0 + top_pad
     for line in lines:
         draw.text((x0 + 34, y), line, font=font(31), fill=INK)
@@ -476,7 +512,8 @@ def chip(draw: ImageDraw.ImageDraw, box, title: str, lines: list[str]) -> int:
     return int(bottom)
 
 
-def title_plate(draw: ImageDraw.ImageDraw, text: str, top: int = 56, size: int = 54) -> int:
+def title_plate(draw: ImageDraw.ImageDraw, text: str, top: int = 56, size: int = 54,
+                plate=None) -> int:
     """Заголовок в отдельной тёмной пилюле по центру, как у конкурента.
 
     Текст прямо на градиенте читается плохо: сверху фон тёмный, снизу
@@ -486,7 +523,7 @@ def title_plate(draw: ImageDraw.ImageDraw, text: str, top: int = 56, size: int =
     width = draw.textlength(text, font=face)
     pad_x, pad_y = 44, 26
     box = ((W - width) / 2 - pad_x, top, (W + width) / 2 + pad_x, top + size + pad_y * 2)
-    draw.rounded_rectangle(box, radius=RADIUS, fill=PLATE + (PLATE_ALPHA,))
+    draw.rounded_rectangle(box, radius=RADIUS, fill=(plate or PLATE) + (PLATE_ALPHA,))
     draw.text((W / 2, top + (size + pad_y * 2) / 2), text, font=face, fill=INK, anchor="mm")
     return int(box[3])
 
@@ -496,73 +533,80 @@ def title_plate(draw: ImageDraw.ImageDraw, text: str, top: int = 56, size: int =
 # --------------------------------------------------------------------------
 
 
-def make_manual(source: bytes) -> Image.Image:
-    card = backdrop()
+def manual_card(source: bytes, name: str = OWNER) -> Image.Image:
+    """Инструкция: слева профиль с пронумерованной стенкой, справа — правила.
+
+    Карточка собирается под конкретного человека: `source` — его же
+    аватарка, `name` — его юзернейм. Инструкция про «нарежь свой
+    профиль» на чужом демо-кадре читается как реклама; на своём лице
+    видно, что именно получится, и порядок публикации запоминается
+    вместе с картинкой.
+    """
+    card = backdrop(stops=MONO_STOPS, glow_colour=MONO_GLOW)
     draw = ImageDraw.Draw(card, "RGBA")
-    bottom = title_plate(draw, "Как подобрать размер фото")
+    title_plate(draw, "Как собрать стенку", top=48, size=52, plate=MONO_PLATE)
 
-    ratios = []
-    for parts in sorted(slicer.LAYOUTS):
-        w, h = slicer.ideal_ratio(parts)
-        ratios.append(f"{w}:{h}   →   {parts} сторис")
-    top = bottom + 28
-    chip(draw, (60, top, W // 2 - 14, top + 292), "Идеальные пропорции", ratios)
-    chip(
-        draw, (W // 2 + 14, top, W - 60, top + 292), "Почему так",
-        ["В профиле три колонки,", "а в превью видно только", "середину кадра —", "окно 4:5."],
+    #: Телефон с его собственным профилем: 9 частей — та сетка, на
+    #: которой видно и три колонки, и порядок сверху вниз.
+    #: Фон рамки на аве — «Чёрный»: цветная рамка в серо-белой карточке
+    #: тянет взгляд на себя, а смотреть тут надо на номера.
+    inner = profile_screen(source, 9, SCREEN_W, name, colour_index=0, numbers=True)
+    shell = phone(inner)
+    scale = 880 / shell.height
+    shell = tilt(
+        shell.resize((round(shell.width * scale), round(shell.height * scale)), Image.LANCZOS),
+        -4,
     )
+    halo(card, 270, 690, 300, MONO_GLOW, 0.28)
+    card.paste(shell, (26, 232), shell)
 
-    #: Сетку кладём как у конкурента: тонкие белые швы и крупные белые
-    #: цифры прямо на снимке, без тёмных кружков — кружки съедают кадр и
-    #: превращают демонстрацию в схему.
-    grid_w, grid_x = 420, 60
-    grid_y = top + 330
-    grid = wall_grid(source, 9, grid_w, 6, seam=(255, 255, 255))
-    card.paste(grid, (grid_x, grid_y))
-    gdraw = ImageDraw.Draw(card, "RGBA")
-    cell = (grid_w - 12) // 3
-    cell_h = round(cell * slicer.CELL_H / slicer.CELL_W)
-    number = 9
-    for row in range(3):
-        for col in range(3):
-            cx = grid_x + col * (cell + 6) + cell / 2
-            cy = grid_y + row * (cell_h + 6) + cell_h / 2
-            gdraw.text((cx + 2, cy + 2), str(number), font=font(52),
-                       fill=(0, 0, 0, 150), anchor="mm")
-            gdraw.text((cx, cy), str(number), font=font(52), fill=INK, anchor="mm")
-            number -= 1
+    draw = ImageDraw.Draw(card, "RGBA")
+    col_x, col_r = 546, W - 60
 
-    grid_bottom = grid_y + cell_h * 3 + 12
-    chip(
-        ImageDraw.Draw(card, "RGBA"),
-        (520, grid_y, W - 60, grid_bottom),
-        "Последовательность",
+    ratios = [f"{w}:{h}   →   {parts} сторис"
+              for parts in sorted(slicer.LAYOUTS)
+              for w, h in [slicer.ideal_ratio(parts)]]
+    bottom = chip(draw, (col_x, 200, col_r, 200), "Идеальные пропорции", ratios,
+                  accent=MONO_ACCENT, plate=MONO_PLATE)
+
+    bottom = chip(
+        draw, (col_x, bottom + 28, col_r, bottom + 28), "Порядок публикации",
         [
             "Публикуй файлы подряд,",
-            "сверху вниз — бот уже",
-            "отдал их в нужном",
-            "порядке.",
+            "сверху вниз, по одному.",
             "",
-            "Первый файл — правый",
-            "нижний угол.",
-            "Последний — левый",
-            "верхний.",
+            "Первый — правый нижний",
+            "угол. Последний —",
+            "левый верхний.",
         ],
+        accent=MONO_ACCENT, plate=MONO_PLATE,
     )
 
-    draw = ImageDraw.Draw(card, "RGBA")
-    warn_top = grid_bottom + 26
-    draw.rounded_rectangle((60, warn_top, W - 60, warn_top + 156), radius=RADIUS,
-                           fill=(74, 46, 12, 236))
-    draw.text((94, warn_top + 24), "Важно", font=font(34), fill=(255, 196, 92))
-    draw.text(
-        (94, warn_top + 74),
-        f"Фото меньше {slicer.MIN_SIDE} px по короткой стороне\n"
-        "на 12–15 частей бот растянет — будет мылить.",
-        font=font(31), fill=INK,
+    chip(
+        draw, (col_x, bottom + 28, col_r, bottom + 28), "Важно",
+        [
+            f"Фото меньше {slicer.MIN_SIDE} px по",
+            "короткой стороне на 12–15",
+            "частей бот растянет.",
+        ],
+        accent=MONO_ACCENT, plate=MONO_PLATE,
     )
-    footer(card)
+
+    footer(card, colour=MONO_FOOT)
     return card
+
+
+def make_manual(source: bytes) -> Image.Image:
+    """Запасная инструкция в файле — на случай, если у человека нет авы."""
+    return manual_card(source)
+
+
+def personal_manual(photo: bytes, name: str) -> bytes:
+    """Та же карточка, но собранная под конкретного человека, в JPEG."""
+    buf = io.BytesIO()
+    manual_card(photo, name).convert("RGB").save(buf, format="JPEG", quality=90,
+                                                 optimize=True)
+    return buf.getvalue()
 
 
 def make_welcome(source: bytes) -> Image.Image:

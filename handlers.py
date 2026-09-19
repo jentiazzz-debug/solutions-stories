@@ -30,6 +30,7 @@ from aiogram.types import (
 import config
 import db
 import frames
+import make_assets
 import keyboards as kb
 import slicer
 import texts
@@ -156,12 +157,47 @@ async def on_about(message: Message, state: FSMContext) -> None:
     await _reward_inviter(message.bot, message.from_user.id)
 
 
+async def _profile_photo(bot: Bot, user_id: int) -> bytes | None:
+    """Аватарка человека файлом — или None, если её нет.
+
+    Аву может скрывать приватность, а может её просто не быть: и то и
+    другое здесь не ошибка, а обычный случай, поэтому возвращаем None и
+    показываем запасную карточку.
+    """
+    try:
+        shots = await bot.get_user_profile_photos(user_id, limit=1)
+        if not shots.photos:
+            return None
+        buf = await bot.download(shots.photos[0][-1].file_id)
+        return buf.read() if buf is not None else None
+    except TelegramBadRequest:
+        return None
+
+
 @router.message(Command("help"))
 @router.message(F.text == kb.MANUAL)
 async def on_manual(message: Message, state: FSMContext) -> None:
     await state.clear()
+    user = message.from_user
+    #: Инструкцию собираем на его собственном профиле: на своём лице
+    #: сразу видно, что получится, а порядок публикации запоминается
+    #: вместе с картинкой, а не как правило из текста.
+    photo = await _profile_photo(message.bot, user.id)
+    if photo:
+        name = f"@{user.username}" if user.username else (user.first_name or "профиль")
+        try:
+            card = await asyncio.to_thread(make_assets.personal_manual, photo, name)
+        except Exception:
+            #: Сломанная ава не должна стоить человеку инструкции —
+            #: молча уходим на общую карточку из assets.
+            logger.exception("не собрал личную инструкцию для %s", user.id)
+        else:
+            await message.answer_photo(BufferedInputFile(card, filename="manual.jpg"),
+                                       caption=texts.manual())
+            await _reward_inviter(message.bot, user.id)
+            return
     await _send_asset(message, "manual.jpg", texts.manual())
-    await _reward_inviter(message.bot, message.from_user.id)
+    await _reward_inviter(message.bot, user.id)
 
 
 @router.message(F.text == kb.REFERRALS)
