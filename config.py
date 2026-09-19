@@ -67,15 +67,18 @@ CUT_OPTIONS = (3, 6, 9, 12, 15)
 
 def _prices(raw: str | None) -> dict[int, int]:
     """Цены вида «6:20,9:25» — если нужно отойти от единой CUT_PRICE."""
-    default = {n: CUT_PRICE for n in CUT_OPTIONS}
+    #: Начинаем с полного набора и переопределяем разобранным, а не
+    #: заменяем целиком. На хостинге стояло «6:20,9:25,12:30,15:35» без
+    #: тройки — бот предлагал «3 части» и падал с KeyError, когда её
+    #: выбирали. Частичный список теперь просто уточняет часть цен.
+    out = {n: CUT_PRICE for n in CUT_OPTIONS}
     if not raw:
-        return default
-    out: dict[int, int] = {}
+        return out
     for chunk in raw.replace(";", ",").split(","):
         parts, _, stars = chunk.partition(":")
         if parts.strip().isdigit() and stars.strip().isdigit():
             out[int(parts)] = int(stars)
-    return out or default
+    return out
 
 
 #: Сколько стоит нарезка на N частей. По умолчанию везде CUT_PRICE;

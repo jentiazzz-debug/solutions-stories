@@ -65,11 +65,22 @@ BRAND = "Solutions Stories"
 OWNER = "@nudick"
 HANDLE = "@SolutionsStoriesbot"
 
+#: Шрифт ищем сначала в репозитории, потом в системе. Контейнер на
+#: хостинге — голый python:3.11, шрифтов там нет вообще: пока карточки
+#: собирались только на моей машине, это было незаметно, а личная
+#: инструкция рисуется уже в проде и падала на первом же заголовке.
+FONTS_DIR = OUT / "fonts"
+
 _FONTS = (
+    str(FONTS_DIR / "DejaVuSans-Bold.ttf"),
+    str(FONTS_DIR / "DejaVuSans.ttf"),
     "arialbd.ttf", "arial.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 )
+
+NO_FONT = ("Не нашёл шрифт с кириллицей. Положи .ttf в assets/fonts "
+           "(DejaVuSans-Bold.ttf) или впиши свой в _FONTS.")
 
 
 def font(size: int) -> ImageFont.FreeTypeFont:
@@ -78,9 +89,12 @@ def font(size: int) -> ImageFont.FreeTypeFont:
             return ImageFont.truetype(name, size)
         except OSError:
             continue
-    raise SystemExit(
-        "Не нашёл шрифт с кириллицей. Положи .ttf рядом и впиши его в _FONTS."
-    )
+    #: Не SystemExit: раньше эта функция работала только в сборке, где
+    #: «выйти с ошибкой» — нормальный исход. Теперь её зовёт бот, а
+    #: SystemExit наследуется от BaseException и пролетает мимо
+    #: `except Exception` в хендлере — человек получал молчание вместо
+    #: инструкции.
+    raise RuntimeError(NO_FONT)
 
 
 # --------------------------------------------------------------------------
@@ -802,6 +816,11 @@ def main() -> int:
     force = force_all or "--force" in sys.argv
 
     OUT.mkdir(parents=True, exist_ok=True)
+    try:
+        font(20)
+    except RuntimeError as err:
+        print(err)
+        return 1
     source = pick_source(argv)
     (OUT / "_demo_source.jpg").write_bytes(source)
 
