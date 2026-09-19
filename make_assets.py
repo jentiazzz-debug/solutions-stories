@@ -733,20 +733,34 @@ def pick_source(argv: list[str]) -> bytes:
 
 
 def main() -> int:
+    #: Готовые карточки не перезаписываем. Часть из них рисуется руками
+    #: — сгенерировать их заново скрипт не может, а молча затереть чужую
+    #: работу может запросто. Пересобрать принудительно: --force.
+    argv = [a for a in sys.argv if a != "--force"]
+    force = "--force" in sys.argv
+
     OUT.mkdir(parents=True, exist_ok=True)
-    source = pick_source(sys.argv)
+    source = pick_source(argv)
     (OUT / "_demo_source.jpg").write_bytes(source)
 
+    kept = []
     for name, build in (
         ("welcome", make_welcome),
         ("about", make_about),
         ("manual", make_manual),
         ("frames", make_frames),
     ):
-        card = build(source).convert("RGB")
         path = OUT / f"{name}.jpg"
+        if path.is_file() and not force:
+            kept.append(path.name)
+            continue
+        card = build(source).convert("RGB")
         card.save(path, format="JPEG", quality=92, optimize=True)
         print(f"{path.name:<14} {card.size[0]}×{card.size[1]}  {path.stat().st_size // 1024} КБ")
+
+    if kept:
+        print(f"оставил как есть: {', '.join(kept)}")
+        print("перерисовать поверх: python make_assets.py --force")
     return 0
 
 
