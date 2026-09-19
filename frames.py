@@ -10,18 +10,18 @@
 Фоны подарков — радиальные: центр светлее краёв. Обычный линейный
 градиент на их месте сразу выдаёт подделку, поэтому здесь тоже радиал.
 
-Почему рамки нарисованы, а не разложены по кругу. Двадцать одинаковых
-значков через равные углы читаются как клипарт — это и была главная
-беда прошлой версии. Дорого выглядит другое: разный размер элементов,
-несимметричные сгущения, тень под элементом и блик сверху. Здесь каждая
-рамка — отдельная функция рисования, а не строчка в таблице.
+Сами рамки — файлы, а не код. Процедурные венки читались как ряд
+одинаковых значков по кругу и рядом с рисованными проигрывали, поэтому
+их убрали целиком. Модуль теперь занят другим: вырезает фон у картинок
+без прозрачности, меряет просвет в середине, чтобы подогнать под него
+фото, и перекрашивает рамку под фон профиля.
 """
 
 from __future__ import annotations
 
 import io
 import math
-import random
+import re
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
@@ -31,7 +31,7 @@ import config
 #: Итоговая аватарка. 512 — то, что Telegram принимает без пережатия.
 SIZE = 512
 
-#: Рисуем крупнее и уменьшаем: без этого лепестки и блики рвутся.
+#: Маски круга считаем крупнее и уменьшаем: без этого край рвётся.
 SS = 3
 
 #: Фоны. Первым — подарочный Black, о нём спрашивают чаще всего.
@@ -143,385 +143,12 @@ def tint_layer(layer: Image.Image, backdrop_idx: int,
     return out
 
 
-# --------------------------------------------------------------------------
-# Кисти
-# --------------------------------------------------------------------------
+#: Рамок, нарисованных кодом, больше нет — в карусели только файлы из
+#: assets/frames и из тома с загруженными. Процедурные читались как
+#: набор одинаковых значков по кругу и рядом с рисованными проигрывали
+#: настолько, что держать их смысла не было.
+FRAMES: list[tuple[str, object]] = []
 
-
-def _poly(draw: ImageDraw.ImageDraw, pts, fill) -> None:
-    draw.polygon([(float(x), float(y)) for x, y in pts], fill=fill)
-
-
-def _rotate(pts, angle: float, cx: float, cy: float):
-    cos_a, sin_a = math.cos(angle), math.sin(angle)
-    return [(cx + x * cos_a - y * sin_a, cy + x * sin_a + y * cos_a) for x, y in pts]
-
-
-def _leaf_shape(length: float, width: float, tilt: float = 0.0):
-    """Лист: две дуги, сходящиеся в остриё. Ассиметричный — так живее."""
-    pts = []
-    steps = 22
-    for i in range(steps + 1):
-        t = i / steps
-        pts.append((width * math.sin(t * math.pi) * (1 - 0.25 * t), -length * t))
-    for i in range(steps + 1):
-        t = 1 - i / steps
-        pts.append((-width * math.sin(t * math.pi) * (1 + tilt * t), -length * t))
-    return pts
-
-
-def _petal_shape(length: float, width: float):
-    pts = []
-    for i in range(26):
-        t = i / 25
-        pts.append((width * math.sin(t * math.pi), -length * t))
-    for i in range(26):
-        t = 1 - i / 25
-        pts.append((-width * math.sin(t * math.pi), -length * t))
-    return pts
-
-
-def _star_shape(outer: float, inner: float, points: int = 4):
-    pts = []
-    for i in range(points * 2):
-        r = outer if i % 2 == 0 else inner
-        a = -math.pi / 2 + i * math.pi / points
-        pts.append((r * math.cos(a), r * math.sin(a)))
-    return pts
-
-
-def _heart_shape(r: float):
-    pts = []
-    for i in range(34):
-        t = i * math.tau / 34
-        x = 16 * math.sin(t) ** 3
-        y = -(13 * math.cos(t) - 5 * math.cos(2 * t) - 2 * math.cos(3 * t) - math.cos(4 * t))
-        pts.append((x * r / 16, y * r / 16))
-    return pts
-
-
-def _shard_shape(length: float, width: float):
-    return [(0, -length), (width, -length * 0.35), (width * 0.55, length * 0.3),
-            (0, length * 0.5), (-width * 0.55, length * 0.3), (-width, -length * 0.35)]
-
-
-class Wreath:
-    """Холст одной рамки: тень снизу, элемент, блик сверху, свечение."""
-
-    def __init__(self, size: int) -> None:
-        self.big = size * SS
-        self.centre = self.big / 2
-        self.ring = self.big * 0.372
-        self.layer = Image.new("RGBA", (self.big, self.big), (0, 0, 0, 0))
-        self.shadow = Image.new("RGBA", (self.big, self.big), (0, 0, 0, 0))
-        self.glow = Image.new("RGBA", (self.big, self.big), (0, 0, 0, 0))
-        self.draw = ImageDraw.Draw(self.layer)
-        self.sdraw = ImageDraw.Draw(self.shadow)
-        self.gdraw = ImageDraw.Draw(self.glow)
-
-    def at(self, angle: float, radius: float | None = None) -> tuple[float, float]:
-        r = self.ring if radius is None else radius
-        return self.centre + r * math.cos(angle), self.centre + r * math.sin(angle)
-
-    def piece(self, pts, angle: float, cx: float, cy: float, fill,
-              shade=None, shine=None, glow=None) -> None:
-        """Один элемент со всей обвязкой.
-
-        Тень кладётся со смещением вниз-вправо, блик — уменьшенной
-        копией вверх-влево. Без этой пары фигура остаётся плоской
-        заливкой, сколько её ни раскрашивай.
-        """
-        body = _rotate(pts, angle, cx, cy)
-        if shade is not None:
-            off = self.big * 0.006
-            _poly(self.sdraw, [(x + off, y + off) for x, y in body], shade)
-        if glow is not None:
-            _poly(self.gdraw, body, glow)
-        _poly(self.draw, body, fill)
-        if shine is not None:
-            small = [(x * 0.55, y * 0.55 - self.big * 0.004) for x, y in pts]
-            _poly(self.draw, _rotate(small, angle, cx, cy), shine)
-
-    def finish(self) -> Image.Image:
-        out = Image.new("RGBA", (self.big, self.big), (0, 0, 0, 0))
-        out.alpha_composite(self.shadow.filter(ImageFilter.GaussianBlur(self.big * 0.012)))
-        out.alpha_composite(self.glow.filter(ImageFilter.GaussianBlur(self.big * 0.030)))
-        out.alpha_composite(self.glow.filter(ImageFilter.GaussianBlur(self.big * 0.009)))
-        out.alpha_composite(self.layer)
-        return out.resize((self.big // SS, self.big // SS), Image.LANCZOS)
-
-
-# --------------------------------------------------------------------------
-# Рамки
-# --------------------------------------------------------------------------
-#
-# У каждой — своя логика раскладки. Равномерный шаг используется только
-# там, где он оправдан (жемчуг, цепь); остальные собраны сгущениями.
-
-SHADE = (0, 0, 0, 120)
-
-
-def _laurel(w: Wreath) -> Image.Image:
-    """Лавр: сплошная лента листьев в два слоя.
-
-    Плотность здесь важнее рисунка отдельного листа. Пока между
-    элементами есть зазор, глаз видит ряд значков; как только соседи
-    перекрываются, лента читается одним предметом — венком.
-    """
-    gold, dark, shine = (240, 206, 126), (128, 94, 30), (255, 242, 200)
-    count = 46
-    for layer in (0, 1):
-        back = layer == 0
-        radius = w.ring * (1.055 if back else 0.985)
-        scale = 0.86 if back else 1.0
-        #: Задний слой сдвинут на полшага — стыки переднего ряда
-        #: закрываются, и просветов в ленте не остаётся.
-        shift = math.pi / count if back else 0.0
-        for i in range(count):
-            angle = i * math.tau / count + shift
-            cx, cy = w.at(angle, radius)
-            length = w.big * 0.098 * scale
-            leaf = _leaf_shape(length, length * 0.27, tilt=0.16)
-            colour = _mix(gold, dark, 0.62 if back else 0.10)
-            w.piece(leaf, angle + math.pi / 2 + 0.46, cx, cy, colour + (255,),
-                    shade=None if back else SHADE,
-                    shine=None if back else shine + (95,))
-    return w.finish()
-
-
-def _neon(w: Wreath) -> Image.Image:
-    """Неон: широкое свечение, тонкое ядро, разрыв сверху."""
-    tint = (90, 240, 255)
-    box = (w.centre - w.ring, w.centre - w.ring, w.centre + w.ring, w.centre + w.ring)
-    w.gdraw.arc(box, 108, 72, fill=tint + (255,), width=round(w.big * 0.030))
-    w.draw.arc(box, 108, 72, fill=tint + (235,), width=round(w.big * 0.016))
-    w.draw.arc(box, 108, 72, fill=(255, 255, 255, 240), width=round(w.big * 0.005))
-    for angle in (108 * math.pi / 180, 72 * math.pi / 180):
-        cx, cy = w.at(angle)
-        r = w.big * 0.012
-        w.draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(255, 255, 255, 240))
-        w.gdraw.ellipse((cx - r * 2, cy - r * 2, cx + r * 2, cy + r * 2), fill=tint + (255,))
-    return w.finish()
-
-
-def _chain(w: Wreath) -> Image.Image:
-    """Цепь: звенья-трубки, соседние развёрнуты и заходят друг на друга.
-
-    Звено рисуется не контуром эллипса, а цепочкой кружков по его
-    траектории: контур даёт плоское кольцо, а кружки с меняющейся
-    яркостью читаются как круглый металлический пруток.
-    """
-    steel, dark = (232, 236, 246), (92, 98, 114)
-    #: 16 звеньев при этом радиусе стояли с просветами — цепь
-    #: рассыпалась на отдельные колечки.
-    count = 26
-    tube = w.big * 0.0080
-    for i in range(count):
-        angle = i * math.tau / count
-        #: Нечётные звенья чуть ближе к центру — тогда соседние
-        #: перекрываются, и цепь перестаёт быть рядом отдельных колец.
-        cx, cy = w.at(angle, w.ring * (1.0 if i % 2 == 0 else 0.972))
-        flat = i % 2 == 0
-        rx = w.big * (0.046 if flat else 0.027)
-        ry = w.big * (0.027 if flat else 0.046)
-        spin = angle + math.pi / 2
-        cos_s, sin_s = math.cos(spin), math.sin(spin)
-        for k in range(40):
-            a = k * math.tau / 40
-            lx, ly = rx * math.cos(a), ry * math.sin(a)
-            px = cx + lx * cos_s - ly * sin_s
-            py = cy + lx * sin_s + ly * cos_s
-            #: Свет сверху-слева: по верхней дуге пруток светлее.
-            lit = 0.5 - 0.5 * math.cos(a - spin - math.pi / 4)
-            colour = _mix(dark, steel, lit)
-            w.sdraw.ellipse((px - tube + w.big * 0.004, py - tube + w.big * 0.004,
-                             px + tube + w.big * 0.004, py + tube + w.big * 0.004), fill=SHADE)
-            w.draw.ellipse((px - tube, py - tube, px + tube, py + tube), fill=colour + (255,))
-    return w.finish()
-
-
-def _flame(w: Wreath) -> Image.Image:
-    """Пламя: языки снизу, выше — короче и бледнее, всё в свечении."""
-    rng = random.Random(3)
-    for i in range(52):
-        t = i / 51
-        #: Языки гуще внизу: пламя не окружает голову равномерно.
-        angle = math.pi / 2 + (t - 0.5) * math.tau * 0.88
-        spread = abs(math.sin(angle))
-        cx, cy = w.at(angle, w.ring * (0.97 + 0.05 * rng.random()))
-        length = w.big * (0.050 + 0.095 * spread) * rng.uniform(0.72, 1.28)
-        #: Кончик уводим вбок случайной стороной: симметричный язычок —
-        #: это лепесток, а пламя кривое.
-        bend = rng.uniform(-0.42, 0.42) * length
-        tongue = [(bend, -length), (w.big * 0.019, -length * 0.42),
-                  (w.big * 0.012, length * 0.20), (0, length * 0.30),
-                  (-w.big * 0.012, length * 0.20), (-w.big * 0.019, -length * 0.42)]
-        hot = _mix((255, 236, 150), (222, 58, 20), (1 - spread) * rng.uniform(0.6, 1.1))
-        w.piece(tongue, angle + math.pi / 2 + rng.uniform(-0.12, 0.12), cx, cy, hot + (245,),
-                glow=(255, 130, 40, 150),
-                shine=(255, 248, 210, 130))
-    return w.finish()
-
-
-def _sakura(w: Wreath) -> Image.Image:
-    """Сакура: три грозди разного размера, между ними — редкие цветки."""
-    pink, deep, heart = (255, 216, 228), (222, 100, 146), (255, 226, 130)
-    rng = random.Random(7)
-    #: Сомкнутая лента цветов: 22 штуки при таком размере лепестка
-    #: перекрываются, и венок становится венком. Размер всё равно гуляет
-    #: — ровные одинаковые цветы выглядят штампом.
-    count = 22
-    for layer in (0, 1):
-        back = layer == 0
-        for i in range(count):
-            angle = (i + (0.5 if back else 0.0)) * math.tau / count
-            cx, cy = w.at(angle, w.ring * (1.055 if back else 0.98))
-            petal_len = w.big * (0.044 if back else 0.056) * rng.uniform(0.86, 1.14)
-            for k in range(5):
-                spin = angle + k * math.tau / 5 + rng.uniform(-0.1, 0.1)
-                w.piece(_petal_shape(petal_len, petal_len * 0.48), spin, cx, cy,
-                        _mix(pink, deep, (0.55 if back else 0.12) + 0.3 * rng.random()) + (250,),
-                        shade=None if back else SHADE)
-            if not back:
-                r = petal_len * 0.22
-                w.draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=heart + (255,))
-    return w.finish()
-
-
-def _stardust(w: Wreath) -> Image.Image:
-    """Звёздная пыль: крупные искры сгущаются к правому верху."""
-    rng = random.Random(21)
-    #: Сомкнутое кольцо из трёх рядов, а не россыпь по площади. Россыпь
-    #: и была тем самым «накиданными символами»: у неё нет края, поэтому
-    #: она не читается как рамка.
-    for radius_mul, count, lo, hi in ((1.075, 26, 0.020, 0.034),
-                                      (1.0, 22, 0.038, 0.062),
-                                      (0.935, 26, 0.018, 0.030)):
-        for i in range(count):
-            angle = i * math.tau / count + rng.uniform(-0.04, 0.04)
-            cx, cy = w.at(angle, w.ring * radius_mul * rng.uniform(0.985, 1.015))
-            outer = w.big * rng.uniform(lo, hi)
-            w.piece(_star_shape(outer, outer * 0.15), rng.uniform(0, 1.5), cx, cy,
-                    (255, 255, 255, 250), glow=(150, 220, 255, 170))
-    return w.finish()
-
-
-def _thorns(w: Wreath) -> Image.Image:
-    """Терновник: изогнутые шипы, каждый со светлой кромкой."""
-    dark, edge = (38, 22, 48), (150, 96, 190)
-    #: Плотный частокол: шипы должны касаться основаниями.
-    count = 66
-    for i in range(count):
-        angle = i * math.tau / count
-        cx, cy = w.at(angle, w.ring * (1.03 if i % 2 else 0.97))
-        long_one = i % 3 == 0
-        length = w.big * (0.105 if long_one else 0.062)
-        bend = 0.30 if i % 2 else -0.30
-        spike = [(0, -length), (w.big * 0.021, -length * 0.25),
-                 (w.big * 0.010 + bend * w.big * 0.02, length * 0.16),
-                 (-w.big * 0.010 + bend * w.big * 0.02, length * 0.16),
-                 (-w.big * 0.021, -length * 0.25)]
-        w.piece(spike, angle + math.pi / 2 + bend * 0.5, cx, cy, dark + (255,),
-                shade=SHADE, shine=edge + (120,))
-    return w.finish()
-
-
-def _pearls(w: Wreath) -> Image.Image:
-    """Жемчуг: крупные и мелкие вперемешку, у каждой бусины блик."""
-    base, deep = (255, 252, 248), (168, 162, 180)
-    #: Два сомкнутых ряда: нижний виден в просветах верхнего, поэтому
-    #: нитка выглядит нитью, а не пунктиром из точек.
-    for radius_mul, r_mul, count, shift in ((1.050, 0.020, 34, 0.5), (0.985, 0.027, 30, 0.0)):
-        for i in range(count):
-            angle = (i + shift) * math.tau / count
-            r = w.big * r_mul
-            cx, cy = w.at(angle, w.ring * radius_mul)
-            w.sdraw.ellipse((cx - r + w.big * 0.005, cy - r + w.big * 0.005,
-                             cx + r + w.big * 0.005, cy + r + w.big * 0.005), fill=SHADE)
-            w.draw.ellipse((cx - r, cy - r, cx + r, cy + r),
-                           fill=_mix(base, deep, 0.50 if r_mul < 0.024 else 0.18) + (255,))
-            #: Блик смещён в одну сторону у всех бусин — иначе свет
-            #: выглядит приходящим отовсюду, и объём пропадает.
-            hr = r * 0.34
-            hx, hy = cx - r * 0.34, cy - r * 0.36
-            w.draw.ellipse((hx - hr, hy - hr, hx + hr, hy + hr), fill=(255, 255, 255, 230))
-    return w.finish()
-
-
-def _ice(w: Wreath) -> Image.Image:
-    """Лёд: осколки разной длины, полупрозрачные, с белой кромкой."""
-    rng = random.Random(4)
-    tint = (196, 238, 255)
-    for i in range(34):
-        angle = i * math.tau / 34 + rng.uniform(-0.05, 0.05)
-        cx, cy = w.at(angle, w.ring * 0.99)
-        length = w.big * rng.uniform(0.055, 0.115)
-        shard = _shard_shape(length, w.big * 0.022)
-        w.piece(shard, angle + math.pi / 2, cx, cy, tint + (185,),
-                glow=(120, 210, 255, 110), shine=(255, 255, 255, 210))
-    return w.finish()
-
-
-def _hearts(w: Wreath) -> Image.Image:
-    """Сердца: гроздь слева внизу и редкая россыпь по остальному кругу."""
-    rng = random.Random(11)
-    warm, deep = (255, 126, 162), (188, 24, 80)
-    for layer in (0, 1):
-        back = layer == 0
-        count = 26
-        for i in range(count):
-            angle = (i + (0.5 if back else 0.0)) * math.tau / count
-            cx, cy = w.at(angle, w.ring * (1.055 if back else 0.98))
-            r = w.big * (0.036 if back else 0.048) * rng.uniform(0.88, 1.12)
-            w.piece(_heart_shape(r), angle + math.pi / 2 + rng.uniform(-0.18, 0.18), cx, cy,
-                    _mix(warm, deep, (0.62 if back else 0.10) + 0.25 * rng.random()) + (250,),
-                    shade=None if back else SHADE,
-                    shine=None if back else (255, 220, 232, 130),
-                    glow=(255, 90, 140, 70))
-    return w.finish()
-
-
-def _crown(w: Wreath) -> Image.Image:
-    """Корона: обод и зубцы на одной верхней дуге, камни в основаниях.
-
-    Обод и зубцы обязаны жить на одном участке круга. В прошлой версии
-    дуга рисовалась снизу, а зубцы ставились сверху — корона разъезжалась
-    на улыбку и отдельно висящие треугольники.
-    """
-    gold, dark, gem = (245, 208, 110), (152, 108, 30), (120, 200, 255)
-    start, end = math.radians(203), math.radians(337)
-    box = (w.centre - w.ring, w.centre - w.ring, w.centre + w.ring, w.centre + w.ring)
-    w.draw.arc(box, 203, 337, fill=_mix(gold, dark, 0.30) + (255,), width=round(w.big * 0.014))
-    for i in range(7):
-        t = i / 6
-        angle = start + t * (end - start)
-        cx, cy = w.at(angle)
-        #: Центральный зубец выше боковых — иначе это забор, а не корона.
-        tall = w.big * (0.120 if i == 3 else (0.090 if i in (2, 4) else 0.062))
-        spike = [(0, -tall), (w.big * 0.027, 0), (-w.big * 0.027, 0)]
-        w.piece(spike, angle + math.pi / 2, cx, cy, gold + (255,),
-                shade=SHADE, shine=(255, 244, 200, 150))
-        gx, gy = w.at(angle, w.ring - w.big * 0.004)
-        r = w.big * 0.014
-        w.draw.ellipse((gx - r, gy - r, gx + r, gy + r), fill=gem + (250,))
-        w.gdraw.ellipse((gx - r * 2, gy - r * 2, gx + r * 2, gy + r * 2), fill=gem + (130,))
-    return w.finish()
-
-
-#: Порядок = порядок в карусели. Первыми — самые понятные.
-FRAMES: list[tuple[str, object]] = [
-    ("Лавр", _laurel),
-    ("Жемчуг", _pearls),
-    ("Сакура", _sakura),
-    ("Неон", _neon),
-    ("Пламя", _flame),
-    ("Звёздная пыль", _stardust),
-    ("Сердца", _hearts),
-    ("Корона", _crown),
-    ("Терновник", _thorns),
-    ("Цепь", _chain),
-    ("Лёд", _ice),
-]
 
 
 def custom_frames() -> list[Path]:
@@ -538,15 +165,19 @@ def custom_frames() -> list[Path]:
 
 
 def frame_count() -> int:
-    return len(FRAMES) + len(custom_frames())
+    return len(custom_frames())
 
 
 def frame_name(index: int) -> str:
-    if index < len(FRAMES):
-        return FRAMES[index][0]
-    #: Подчёркивания в подписи — след от имени файла, а человек видит
-    #: это название в карусели.
-    return custom_frames()[index - len(FRAMES)].stem.replace("_", " ")
+    """Подпись в карусели = имя файла без служебных частей.
+
+    Ведущие «10_» — способ задать порядок: карусель сортирует по имени,
+    и без такого префикса новую рамку не поставить в конец, не
+    переименовав соседние. В подписи префикс, понятно, не нужен.
+    """
+    stem = custom_frames()[index].stem
+    stem = re.sub(r"^\d+[_\-\s]+", "", stem)
+    return stem.replace("_", " ")
 
 
 #: Разобранные PNG держим в памяти: иначе каждая аватарка заново читает
@@ -645,17 +276,12 @@ def _load_custom(path: Path, size: int) -> tuple[Image.Image, float]:
 
 
 def _frame_layer(index: int, size: int) -> Image.Image:
-    if index >= len(FRAMES):
-        return _load_custom(custom_frames()[index - len(FRAMES)], size)[0]
-    return FRAMES[index][1](Wreath(size))  # type: ignore[operator]
+    return _load_custom(custom_frames()[index], size)[0]
 
 
 def _avatar_fraction(index: int, size: int) -> float:
     """Какую долю холста занимает фото под этой рамкой."""
-    if index < len(FRAMES):
-        #: Нарисованные рамки считаны под 60 % — у них кольцо на 0.372.
-        return 0.60
-    hole = _load_custom(custom_frames()[index - len(FRAMES)], size)[1]
+    hole = _load_custom(custom_frames()[index], size)[1]
     #: _hole_radius меряет радиус в долях полуширины, а доля холста —
     #: это диаметр в долях ширины. Множитель ровно один: hole = (r / (size/2))
     #: и (2r) / size — одно и то же число.

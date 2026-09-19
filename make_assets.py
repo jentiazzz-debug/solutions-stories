@@ -404,8 +404,14 @@ def profile_screen(source: bytes, parts: int, width: int, name: str,
                    frame_index: int | None = None, colour_index: int = 4) -> Image.Image:
     """Скриншот профиля со стенкой — как его снял бы владелец."""
     screen = Image.new("RGB", (SCREEN_W, SCREEN_H), IOS_BG)
-    avatar = Image.open(io.BytesIO(frames_mod.apply(source, colour_index,
-                                                    3 if frame_index is None else frame_index)))
+    #: Номер рамки не фиксируем: их число зависит от того, сколько файлов
+    #: лежит в папке, и жёсткая тройка роняла сборку на любой правке набора.
+    total = frames_mod.frame_count()
+    if total == 0:
+        avatar = None
+    else:
+        pick = (frame_index if frame_index is not None else 0) % total
+        avatar = Image.open(io.BytesIO(frames_mod.apply(source, colour_index, pick)))
     grid_top = _profile_chrome(screen, name, avatar)
 
     gap = 2
@@ -691,10 +697,14 @@ def make_frames(source: bytes) -> Image.Image:
     #: рамки, а не движок, и рисованная продаёт лучше процедурной.
     #: На витрине рамки показываем родными цветами: подгонка под фон
     #: хороша в профиле, но здесь она гасит именно то, что продаётся.
-    hero = profile_card(source, 11, 7, "@nudick", 620, 500, tint=False)
+    #: Номера рамок больше не фиксированы — их число зависит от того,
+    #: сколько файлов в папке. Берём по кругу, иначе витрина падает на
+    #: любой правке набора.
+    total = max(1, frames_mod.frame_count())
+    hero = profile_card(source, 0 % total, 7, "@nudick", 620, 500, tint=False)
     card.paste(hero, ((W - hero.width) // 2, 216), hero)
 
-    picks = [12, 3, 5, 7]
+    picks = [i % total for i in (1, 2, 3, 0)]
     size, gap = 208, 22
     start_x = (W - (size * len(picks) + gap * (len(picks) - 1))) // 2
     row_y = 772

@@ -362,6 +362,11 @@ async def on_frames(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "frames:go")
 async def cb_frames_go(callback: CallbackQuery, state: FSMContext) -> None:
+    #: Рамки теперь только файлами, и папка может оказаться пустой.
+    #: Без этой проверки карусель делит номер на ноль прямо на первом шаге.
+    if frames.frame_count() == 0:
+        await callback.answer(texts.NO_FRAMES, show_alert=True)
+        return
     await callback.answer()
     await state.set_state(Frame.colour)
     await state.update_data(colour=0, frame=0, tint=True)
