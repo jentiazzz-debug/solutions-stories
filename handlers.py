@@ -373,6 +373,28 @@ async def cb_frames_go(callback: CallbackQuery, state: FSMContext) -> None:
     await _show_colour(callback.message, 0, new=True)
 
 
+#: Ошибки, которыми Telegram отвечает на гонку правок. Человек листает
+#: карусель быстрее, чем бот успевает отрисовать превью: предыдущий
+#: edit_media отменяется следующим. Это норма работы, а не сбой, —
+#: показывать нечего, логировать тем более.
+_EDIT_RACE = (
+    "canceled by new edit message request",
+    "message is not modified",
+    "message to edit not found",
+)
+
+
+async def _swap_media(message: Message, media: InputMediaPhoto, markup) -> None:
+    """Заменить картинку в сообщении, пережив гонку с соседним нажатием."""
+    try:
+        await message.edit_media(media, reply_markup=markup)
+    except TelegramBadRequest as err:
+        text = str(err).lower()
+        if not any(known in text for known in _EDIT_RACE):
+            raise
+        logger.debug("правка карусели разошлась с соседней: %s", err)
+
+
 async def _show_colour(message: Message, index: int, new: bool = False) -> None:
     total = len(frames.COLORS)
     shot = await asyncio.to_thread(frames.preview, index, None, texts.BRAND)
@@ -382,9 +404,10 @@ async def _show_colour(message: Message, index: int, new: bool = False) -> None:
         await message.answer_photo(media, caption=caption,
                                    reply_markup=kb.carousel("col", index + 1, total))
         return
-    await message.edit_media(
+    await _swap_media(
+        message,
         InputMediaPhoto(media=media, caption=caption),
-        reply_markup=kb.carousel("col", index + 1, total),
+        kb.carousel("col", index + 1, total),
     )
 
 
@@ -399,8 +422,7 @@ async def _show_frame(message: Message, colour: int, index: int, credits: int,
     if new:
         await message.answer_photo(media, caption=caption, reply_markup=markup)
         return
-    await message.edit_media(InputMediaPhoto(media=media, caption=caption),
-                             reply_markup=markup)
+    await _swap_media(message, InputMediaPhoto(media=media, caption=caption), markup)
 
 
 @router.callback_query(F.data.startswith("col:"))
