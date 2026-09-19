@@ -53,13 +53,17 @@ def parts() -> InlineKeyboardMarkup:
     """Варианты сетки по двое в ряд — по одному на строку список уезжает
     за экран вместе с превью, ради которого всё и затевалось."""
     options = sorted(slicer.LAYOUTS)
+    #: Цена на кнопке помогает выбирать, только когда варианты стоят
+    #: по-разному. При единой цене это пять одинаковых «10⭐», которые
+    #: съедают место под названием сетки — её называет подпись выше.
+    flat = config.flat_cut_price()
     rows: list[list[InlineKeyboardButton]] = []
     for i in range(0, len(options), 2):
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"{n} {texts.plural(n, 'часть', 'части', 'частей')} · "
-                         f"{config.PRICES.get(n, '?')}⭐",
+                    text=f"{n} {texts.plural(n, 'часть', 'части', 'частей')}"
+                         + ("" if flat else f" · {config.PRICES.get(n, '?')}⭐"),
                     callback_data=f"cut:{n}",
                 )
                 for n in options[i : i + 2]

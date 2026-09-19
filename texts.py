@@ -111,13 +111,20 @@ def ask_photo() -> str:
 
 
 def photo_taken(credits: int) -> str:
+    flat = config.flat_cut_price()
     lines = ["✅ Фото получено. На сколько частей режем?", ""]
     for parts in sorted(slicer.LAYOUTS):
         w, h = slicer.ideal_ratio(parts)
+        price = "" if flat else f" — {config.PRICES.get(parts, '—')} ⭐"
         lines.append(
             f"  • <b>{parts}</b> — сетка 3×{slicer.LAYOUTS[parts]}, "
-            f"идеально под {w}:{h} — {config.PRICES.get(parts, '—')} ⭐"
+            f"идеально под {w}:{h}{price}"
         )
+    if flat:
+        #: Цену называем один раз и словами: так видно, что пятнадцать
+        #: частей стоят столько же, сколько три. Иначе человек берёт
+        #: сетку поменьше, решив, что так дешевле.
+        lines += ["", f"💫 Любая сетка — <b>{flat}</b> ⭐, хоть 3 части, хоть 15."]
     if credits:
         lines += ["", f"🎁 Бесплатных генераций: <b>{credits}</b> — спишется вместо звёзд."]
     return "\n".join(lines)

@@ -742,12 +742,20 @@ def pick_source(argv: list[str]) -> bytes:
     return demo_source()
 
 
+#: Карточки, которые нарисованы руками. Скрипт их не воспроизведёт —
+#: у него нет ни исходников, ни шрифтов, — поэтому даже --force их не
+#: трогает. Один раз я так уже затёр готовые баннеры; проверка стоит
+#: строчки, а восстановление стоило вечера.
+HANDMADE = {"welcome.jpg", "about.jpg", "frames.jpg"}
+
+
 def main() -> int:
-    #: Готовые карточки не перезаписываем. Часть из них рисуется руками
-    #: — сгенерировать их заново скрипт не может, а молча затереть чужую
-    #: работу может запросто. Пересобрать принудительно: --force.
-    argv = [a for a in sys.argv if a != "--force"]
-    force = "--force" in sys.argv
+    #: Готовые карточки не перезаписываем: молча затереть чужую работу
+    #: скрипт может запросто. --force перерисовывает процедурные,
+    #: --force-all — вообще всё, включая нарисованное руками.
+    argv = [a for a in sys.argv if a not in ("--force", "--force-all")]
+    force_all = "--force-all" in sys.argv
+    force = force_all or "--force" in sys.argv
 
     OUT.mkdir(parents=True, exist_ok=True)
     source = pick_source(argv)
@@ -761,8 +769,9 @@ def main() -> int:
         ("frames", make_frames),
     ):
         path = OUT / f"{name}.jpg"
-        if path.is_file() and not force:
-            kept.append(path.name)
+        handmade = path.name in HANDMADE and not force_all
+        if path.is_file() and (handmade or not force):
+            kept.append(path.name + (" (рисованная)" if handmade else ""))
             continue
         card = build(source).convert("RGB")
         card.save(path, format="JPEG", quality=92, optimize=True)
@@ -770,7 +779,8 @@ def main() -> int:
 
     if kept:
         print(f"оставил как есть: {', '.join(kept)}")
-        print("перерисовать поверх: python make_assets.py --force")
+        print("перерисовать процедурные: python make_assets.py --force")
+        print("затереть и рисованные:    python make_assets.py --force-all")
     return 0
 
 
