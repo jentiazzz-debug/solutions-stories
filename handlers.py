@@ -153,7 +153,8 @@ async def on_start(message: Message, command: CommandObject, state: FSMContext) 
 @router.message(F.text == kb.ABOUT)
 async def on_about(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await _send_asset(message, "about.jpg", texts.about(), kb.welcome())
+    await _personal_card(message, make_assets.personal_about, "about.jpg",
+                         texts.about(), kb.welcome())
     await _reward_inviter(message.bot, message.from_user.id)
 
 
@@ -174,30 +175,38 @@ async def _profile_photo(bot: Bot, user_id: int) -> bytes | None:
         return None
 
 
-@router.message(Command("help"))
-@router.message(F.text == kb.MANUAL)
-async def on_manual(message: Message, state: FSMContext) -> None:
-    await state.clear()
+async def _personal_card(message: Message, build, asset: str, caption: str,
+                         markup=None) -> None:
+    """Карточка, собранная на аватарке того, кто нажал кнопку.
+
+    И «Для чего это», и «Инструкция» рассказывают, что будет с его
+    профилем. На чужом демо-кадре это реклама, на его собственном —
+    ответ. Аву может скрывать приватность, рендер может упасть на битом
+    файле: ни то ни другое не повод оставить человека без карточки,
+    поэтому запасной вариант — готовый файл из assets.
+    """
     user = message.from_user
-    #: Инструкцию собираем на его собственном профиле: на своём лице
-    #: сразу видно, что получится, а порядок публикации запоминается
-    #: вместе с картинкой, а не как правило из текста.
     photo = await _profile_photo(message.bot, user.id)
     if photo:
         name = f"@{user.username}" if user.username else (user.first_name or "профиль")
         try:
-            card = await asyncio.to_thread(make_assets.personal_manual, photo, name)
+            card = await asyncio.to_thread(build, photo, name)
         except Exception:
-            #: Сломанная ава не должна стоить человеку инструкции —
-            #: молча уходим на общую карточку из assets.
-            logger.exception("не собрал личную инструкцию для %s", user.id)
+            logger.exception("не собрал личную карточку %s для %s", asset, user.id)
         else:
-            await message.answer_photo(BufferedInputFile(card, filename="manual.jpg"),
-                                       caption=texts.manual())
-            await _reward_inviter(message.bot, user.id)
+            await message.answer_photo(BufferedInputFile(card, filename=asset),
+                                       caption=caption, reply_markup=markup)
             return
-    await _send_asset(message, "manual.jpg", texts.manual())
-    await _reward_inviter(message.bot, user.id)
+    await _send_asset(message, asset, caption, markup)
+
+
+@router.message(Command("help"))
+@router.message(F.text == kb.MANUAL)
+async def on_manual(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _personal_card(message, make_assets.personal_manual, "manual.jpg",
+                         texts.manual())
+    await _reward_inviter(message.bot, message.from_user.id)
 
 
 @router.message(F.text == kb.REFERRALS)

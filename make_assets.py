@@ -389,7 +389,9 @@ def _profile_chrome(screen: Image.Image, name: str, avatar: Image.Image | None) 
     avatar_d = 104
     top = 110
     if avatar is not None:
-        plate = avatar.convert("RGB").resize((avatar_d, avatar_d), Image.LANCZOS)
+        #: Кадрируем по центру, а не растягиваем: аватарка почти никогда
+        #: не квадратная, и resize превращал лицо в блин.
+        plate = slicer._cover(avatar.convert("RGB"), avatar_d, avatar_d)
         mask = Image.new("L", (avatar_d * 4, avatar_d * 4), 0)
         ImageDraw.Draw(mask).ellipse((0, 0, avatar_d * 4 - 1, avatar_d * 4 - 1), fill=255)
         screen.paste(plate, ((width - avatar_d) // 2, top),
@@ -478,10 +480,14 @@ def profile_screen(source: bytes, parts: int, width: int, name: str,
     return screen
 
 
-def blank_screen(name: str = "@nudick") -> Image.Image:
-    """Тот же профиль, но с обычной лентой — половина карточки «было/стало»."""
+def blank_screen(name: str = "@nudick", avatar: Image.Image | None = None) -> Image.Image:
+    """Тот же профиль, но с обычной лентой — половина карточки «было/стало».
+
+    Аватарка тут его настоящая, без рамки: половинки должны отличаться
+    ровно тем, о чём раздел, — лентой, а не подменённым лицом.
+    """
     screen = Image.new("RGB", (SCREEN_W, SCREEN_H), IOS_BG)
-    grid_top = _profile_chrome(screen, name, None)
+    grid_top = _profile_chrome(screen, name, avatar)
     draw = ImageDraw.Draw(screen)
     gap = 2
     cell = (SCREEN_W - gap * 2) // 3
@@ -635,12 +641,15 @@ def make_manual(source: bytes) -> Image.Image:
     return manual_card(source)
 
 
+def _jpeg(card: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    card.convert("RGB").save(buf, format="JPEG", quality=90, optimize=True)
+    return buf.getvalue()
+
+
 def personal_manual(photo: bytes, name: str) -> bytes:
     """Та же карточка, но собранная под конкретного человека, в JPEG."""
-    buf = io.BytesIO()
-    manual_card(photo, name).convert("RGB").save(buf, format="JPEG", quality=90,
-                                                 optimize=True)
-    return buf.getvalue()
+    return _jpeg(manual_card(photo, name))
 
 
 def make_welcome(source: bytes) -> Image.Image:
@@ -669,22 +678,34 @@ def make_welcome(source: bytes) -> Image.Image:
     return card
 
 
-def make_about(source: bytes) -> Image.Image:
-    card = backdrop()
+def about_card(source: bytes, name: str = OWNER) -> Image.Image:
+    """«Было / стало» на профиле конкретного человека.
+
+    Раздел отвечает на вопрос «а зачем мне это»; ответ убедительнее
+    всего выглядит на его собственной аватарке: слева его обычная лента,
+    справа она же, собранная в одно полотно.
+    """
+    card = backdrop(stops=MONO_STOPS, glow_colour=MONO_GLOW)
     draw = ImageDraw.Draw(card, "RGBA")
-    title_plate(draw, "Было / стало")
+    title_plate(draw, "Было / стало", plate=MONO_PLATE)
 
     #: Наклон навстречу друг другу: два одинаково стоящих корпуса
     #: читаются как таблица, развёрнутые — как сравнение.
     shells = []
-    for inner, angle in ((blank_screen(OWNER), 6), (profile_screen(source, 9, SCREEN_W, OWNER), -6)):
+    with Image.open(io.BytesIO(source)) as raw:
+        face = raw.convert("RGB").copy()
+    screens = (
+        blank_screen(name, face),
+        profile_screen(source, 9, SCREEN_W, name, colour_index=0),
+    )
+    for inner, angle in zip(screens, (6, -6)):
         shell = phone(inner)
         scale = 700 / shell.height
         shell = shell.resize((round(shell.width * scale), round(shell.height * scale)),
                              Image.LANCZOS)
         shells.append(tilt(shell, angle))
 
-    halo(card, 700, 560, 250, (86, 220, 236), 0.34)
+    halo(card, 700, 560, 250, MONO_GLOW, 0.26)
     gap = 26
     span = shells[0].width + shells[1].width + gap
     x = (W - span) // 2
@@ -697,20 +718,27 @@ def make_about(source: bytes) -> Image.Image:
         cx = (W - span) // 2 + index * (shells[0].width + gap) + shells[0].width / 2
         w = draw.textlength(label, font=font(28))
         draw.rounded_rectangle((cx - w / 2 - 22, 966, cx + w / 2 + 22, 1020),
-                               radius=26, fill=PLATE + (PLATE_ALPHA,))
+                               radius=26, fill=MONO_PLATE + (PLATE_ALPHA,))
         draw.text((cx, 993), label, font=font(28), fill=INK, anchor="mm")
 
-    #: Две строки, а не четыре: плашка кончается на 1216, четвёртая
-    #: строка ложилась уже на градиент под ней.
     chip(
-        draw, (60, 1046, W - 60, 1216), "Что меняется",
-        [
-            "Сетка профиля складывает истории в одно",
-            "полотно. Порядок публикации бот берёт на себя.",
-        ],
+        draw, (60, 1046, W - 60, 1046), "Что меняется",
+        ["Сетка профиля складывает истории в одно полотно. "
+         "Порядок публикации бот берёт на себя."],
+        accent=MONO_ACCENT, plate=MONO_PLATE, size=29, step=44,
     )
-    footer(card)
+    footer(card, colour=MONO_FOOT)
     return card
+
+
+def make_about(source: bytes) -> Image.Image:
+    """Запасная витрина в файле — на случай, если у человека нет авы."""
+    return about_card(source)
+
+
+def personal_about(photo: bytes, name: str) -> bytes:
+    """«Было / стало» под конкретного человека, в JPEG."""
+    return _jpeg(about_card(photo, name))
 
 
 def profile_card(avatar_src: bytes, frame_index: int, colour_index: int,
@@ -824,7 +852,7 @@ def pick_source(argv: list[str]) -> bytes:
 #: у него нет ни исходников, ни шрифтов, — поэтому даже --force их не
 #: трогает. Один раз я так уже затёр готовые баннеры; проверка стоит
 #: строчки, а восстановление стоило вечера.
-HANDMADE = {"welcome.jpg", "about.jpg", "frames.jpg"}
+HANDMADE = {"welcome.jpg", "frames.jpg"}
 
 
 def main() -> int:
