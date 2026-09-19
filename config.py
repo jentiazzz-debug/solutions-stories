@@ -55,7 +55,7 @@ CURRENCY = "XTR"
 
 def _prices(raw: str | None) -> dict[int, int]:
     """Цены вида «6:20,9:25,12:30,15:35» — сколько звёзд за нарезку."""
-    default = {6: 20, 9: 25, 12: 30, 15: 35}
+    default = {3: 10, 6: 20, 9: 25, 12: 30, 15: 35}
     if not raw:
         return default
     out: dict[int, int] = {}

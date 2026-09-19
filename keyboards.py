@@ -17,6 +17,7 @@ from aiogram.types import (
 
 import config
 import slicer
+import texts
 
 CUT = "✂️ Создать сторис"
 FRAMES = "🖼 Рамки для авы"
@@ -57,7 +58,8 @@ def parts() -> InlineKeyboardMarkup:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"{n} частей · {config.PRICES.get(n, '?')}⭐",
+                    text=f"{n} {texts.plural(n, 'часть', 'части', 'частей')} · "
+                         f"{config.PRICES.get(n, '?')}⭐",
                     callback_data=f"cut:{n}",
                 )
                 for n in options[i : i + 2]

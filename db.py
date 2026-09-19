@@ -334,7 +334,7 @@ async def overview() -> dict[str, Any]:
     parts = await _one(
         """
         SELECT
-            SUM(parts = 6) p6, SUM(parts = 9) p9,
+            SUM(parts = 3) p3, SUM(parts = 6) p6, SUM(parts = 9) p9,
             SUM(parts = 12) p12, SUM(parts = 15) p15,
             SUM(kind = 'frame') frames
         FROM cuts
@@ -369,7 +369,7 @@ async def overview() -> dict[str, Any]:
         "referred_active": await _scalar(
             "SELECT COUNT(*) FROM users WHERE ref_by IS NOT NULL AND activated = 1"
         ),
-        "parts": {k: int(parts[k] or 0) for k in ("p6", "p9", "p12", "p15", "frames")}
+        "parts": {k: int(parts[k] or 0) for k in ("p3", "p6", "p9", "p12", "p15", "frames")}
         if parts
         else {},
     }

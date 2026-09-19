@@ -114,7 +114,7 @@ def _pct(part: int, whole: int) -> str:
 def _stats_text(data: dict) -> str:
     parts = data.get("parts", {})
     grid = " · ".join(
-        f"{n}: <b>{parts.get(f'p{n}', 0)}</b>" for n in (6, 9, 12, 15)
+        f"{n}: <b>{parts.get(f'p{n}', 0)}</b>" for n in (3, 6, 9, 12, 15)
     )
     paid_cuts = data["cuts"] - data["free"]
     check = f"{data['stars'] / data['buyers']:.0f}" if data["buyers"] else "—"
