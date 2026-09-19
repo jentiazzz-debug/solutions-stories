@@ -341,16 +341,21 @@ async def cb_give(callback: CallbackQuery) -> None:
 async def cb_frames(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     files = frames.custom_frames()
+    #: В списке на удаление — только загруженные. Рамки из репозитория
+    #: вернутся на следующем деплое, и кнопка «удалить» у них была бы
+    #: обманом; к тому же их больше десятка, и они вытесняли бы из
+    #: панели именно то, что удалить можно.
+    uploaded = [p for p in files if p.parent == config.FRAMES_DIR]
     lines = [
         "🖼 <b>Рамки</b>",
         "",
-        f"Нарисованных в коде: <b>{len(frames.FRAMES)}</b>",
-        f"Своих загружено: <b>{len(files)}</b>",
+        f"Всего в карусели: <b>{len(files)}</b>",
+        f"Из них загружено сюда: <b>{len(uploaded)}</b> (только их и можно удалить)",
     ]
-    if files:
-        lines += ["", *(f"• {path.stem}" for path in files[:12])]
+    if uploaded:
+        lines += ["", *(f"• {path.stem}" for path in uploaded[:12])]
     await callback.message.edit_text(
-        "\n".join(lines), reply_markup=kb.frames_panel([p.stem for p in files])
+        "\n".join(lines), reply_markup=kb.frames_panel([p.stem for p in uploaded])
     )
     await callback.answer()
 
@@ -425,18 +430,13 @@ async def on_frame_file(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("adm:frame:del:"))
 async def cb_frame_del(callback: CallbackQuery, state: FSMContext) -> None:
     index = int(callback.data.rsplit(":", 1)[1])
-    files = frames.custom_frames()
-    if index >= len(files):
+    #: Номер приходит из списка загруженных, а не из всей карусели:
+    #: в ней рамки из репозитория стоят первыми и сдвинули бы индекс.
+    uploaded = [p for p in frames.custom_frames() if p.parent == config.FRAMES_DIR]
+    if index >= len(uploaded):
         await callback.answer("Уже удалена", show_alert=True)
         return
-    target = files[index]
-    #: Рамки из репозитория не трогаем: файл вернётся на следующем
-    #: деплое, и кнопка будет выглядеть сломанной.
-    if target.parent != config.FRAMES_DIR:
-        await callback.answer(
-            "Эта рамка лежит в репозитории — удалять её нужно там.", show_alert=True
-        )
-        return
+    target = uploaded[index]
     target.unlink(missing_ok=True)
     await callback.answer(f"Удалена: {target.stem}")
     await cb_frames(callback, state)
