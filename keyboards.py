@@ -142,6 +142,44 @@ def referrals(link: str) -> InlineKeyboardMarkup:
 # --------------------------------------------------------------------------
 
 
+def subscribe(rows) -> InlineKeyboardMarkup:
+    """Стена обязательной подписки: каналы и кнопка проверки.
+
+    Ссылку берём ту, что сохранили при добавлении канала. Спрашивать её
+    у Telegram на каждом показе — лишний запрос на каждого незалогиненного
+    человека, а меняется она раз в никогда.
+    """
+    keys = []
+    for row in rows:
+        link = row["link"]
+        title = row["title"]
+        keys.append([
+            InlineKeyboardButton(text=f"📢 {title}", url=link)
+            if link else
+            InlineKeyboardButton(text=f"📢 {title}", callback_data="sub:none")
+        ])
+    keys.append([InlineKeyboardButton(text="✅ Я подписался", callback_data="sub:check")])
+    return InlineKeyboardMarkup(inline_keyboard=keys)
+
+
+def gate_panel(rows, on: bool, broken: set[str]) -> InlineKeyboardMarkup:
+    """Админский список каналов: удалить, добавить, включить/выключить."""
+    keys = []
+    for row in rows:
+        mark = "⚠️ " if row["id"] in broken else ""
+        keys.append([InlineKeyboardButton(
+            text=f"❌ {mark}{row['title']}", callback_data=f"adm:gate:del:{row['id']}"
+        )])
+    keys.append([InlineKeyboardButton(text="➕ Добавить канал",
+                                      callback_data="adm:gate:add")])
+    keys.append([InlineKeyboardButton(
+        text="🔴 Выключить проверку" if on else "🟢 Включить проверку",
+        callback_data="adm:gate:toggle",
+    )])
+    keys.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=keys)
+
+
 def admin() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -158,6 +196,8 @@ def admin() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🎁 Выдать", callback_data="adm:grant"),
             ],
             [InlineKeyboardButton(text="🖼 Рамки", callback_data="adm:frames")],
+            [InlineKeyboardButton(text="📢 Обязательная подписка",
+                                  callback_data="adm:gate")],
             [InlineKeyboardButton(text="📣 Рассылка", callback_data="adm:cast")],
             [InlineKeyboardButton(text="🧾 История рассылок", callback_data="adm:history")],
         ]

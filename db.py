@@ -65,6 +65,18 @@ CREATE TABLE IF NOT EXISTS grants (
 );
 CREATE INDEX IF NOT EXISTS grants_at ON grants (at);
 
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS channels (
+    id       TEXT PRIMARY KEY,
+    title    TEXT NOT NULL,
+    link     TEXT,
+    added_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS broadcasts (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     at       INTEGER NOT NULL,
@@ -489,3 +501,52 @@ async def save_broadcast(
 
 async def last_broadcasts(limit: int = 10) -> list[aiosqlite.Row]:
     return await _all("SELECT * FROM broadcasts ORDER BY at DESC LIMIT ?", (limit,))
+
+
+# --------------------------------------------------------------------------
+# Настройки и каналы обязательной подписки
+# --------------------------------------------------------------------------
+
+
+async def get_setting(key: str, default: str = "") -> str:
+    row = await _one("SELECT value FROM settings WHERE key = ?", (key,))
+    return row["value"] if row else default
+
+
+async def set_setting(key: str, value: str) -> None:
+    await _run(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
+async def gate_on() -> bool:
+    """Включена ли обязательная подписка.
+
+    Флаг отдельно от списка каналов: админ выключает проверку на время
+    (канал переехал, идёт закупка) и не теряет настроенные каналы.
+    """
+    return await get_setting("gate", "0") == "1"
+
+
+async def set_gate(on: bool) -> None:
+    await set_setting("gate", "1" if on else "0")
+
+
+async def channels() -> list[aiosqlite.Row]:
+    return await _all("SELECT * FROM channels ORDER BY added_at")
+
+
+async def add_channel(chat_id: str, title: str, link: str | None) -> None:
+    await _run(
+        "INSERT INTO channels (id, title, link, added_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET title = excluded.title, link = excluded.link",
+        (str(chat_id), title, link, now()),
+    )
+
+
+async def remove_channel(chat_id: str) -> bool:
+    before = await _scalar("SELECT COUNT(*) FROM channels WHERE id = ?", (str(chat_id),))
+    await _run("DELETE FROM channels WHERE id = ?", (str(chat_id),))
+    return bool(before)

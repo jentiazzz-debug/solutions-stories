@@ -17,6 +17,7 @@ from pathlib import Path
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import (
+    TelegramAPIError,
     TelegramBadRequest,
     TelegramForbiddenError,
     TelegramRetryAfter,
@@ -31,6 +32,7 @@ import config
 import db
 import frames
 import keyboards as kb
+import subscribe
 import texts
 
 router = Router(name="admin")
@@ -56,6 +58,10 @@ class Grant(StatesGroup):
 
 class FrameUpload(StatesGroup):
     file = State()
+
+
+class GateAdd(StatesGroup):
+    channel = State()
 
 
 async def _apply_grant(bot: Bot, admin_id: int, user_id: int, amount: int,
@@ -440,6 +446,114 @@ async def cb_frame_del(callback: CallbackQuery, state: FSMContext) -> None:
     target.unlink(missing_ok=True)
     await callback.answer(f"Удалена: {target.stem}")
     await cb_frames(callback, state)
+
+
+# --------------------------------------------------------------------------
+# Обязательная подписка
+# --------------------------------------------------------------------------
+
+
+async def _gate_screen(bot: Bot) -> tuple[str, object]:
+    """Текст и клавиатура раздела: они об одном, и собираются вместе."""
+    rows = await db.channels()
+    on = await db.gate_on()
+    #: Спрашиваем у Telegram, админ ли бот в каждом канале. Это главная
+    #: причина, по которой «подписка не работает»: канал добавили, а прав
+    #: боту не выдали, и get_chat_member отвечает отказом.
+    broken = {row["id"] for row in rows if not await subscribe.status(bot, row["id"])}
+    lines = [
+        "📢 <b>Обязательная подписка</b>",
+        "",
+        f"Проверка: <b>{'включена' if on else 'выключена'}</b>",
+        f"Каналов: <b>{len(rows)}</b>",
+    ]
+    if not rows:
+        lines += ["", "Пока ни одного канала — проверять нечего, бот пускает всех."]
+    for row in rows:
+        mark = " ⚠️ бот не админ" if row["id"] in broken else ""
+        lines.append(f"• {row['title']} — <code>{row['id']}</code>{mark}")
+    if broken:
+        lines += [
+            "",
+            "⚠️ В отмеченных каналах бот не администратор и не видит подписчиков. "
+            "Такие каналы проверка <b>пропускает</b>: закрыть бота для всех "
+            "из-за одной кривой настройки хуже, чем не проверить один канал.",
+        ]
+    return "\n".join(lines), kb.gate_panel(rows, on, broken)
+
+
+@router.callback_query(F.data == "adm:gate")
+async def cb_gate(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    await state.clear()
+    text, markup = await _gate_screen(bot)
+    await callback.message.edit_text(text, reply_markup=markup)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:gate:toggle")
+async def cb_gate_toggle(callback: CallbackQuery, bot: Bot) -> None:
+    on = not await db.gate_on()
+    await db.set_gate(on)
+    #: Кеш «этот подписан» живёт пять минут. После переключения он врал бы
+    #: ровно столько же, и проверка выглядела бы сломанной.
+    subscribe.forget()
+    text, markup = await _gate_screen(bot)
+    await callback.message.edit_text(text, reply_markup=markup)
+    await callback.answer("Проверка включена" if on else "Проверка выключена")
+
+
+@router.callback_query(F.data == "adm:gate:add")
+async def cb_gate_add(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(GateAdd.channel)
+    await callback.message.edit_text(
+        "📢 Пришли <b>@юзернейм</b> канала или его ID.\n\n"
+        "Сначала добавь бота в канал администратором: без этого он не видит "
+        "подписчиков, и проверять будет нечем.",
+        reply_markup=kb.admin_back(),
+    )
+    await callback.answer()
+
+
+@router.message(GateAdd.channel, F.text)
+async def on_gate_channel(message: Message, state: FSMContext, bot: Bot) -> None:
+    query = message.text.strip()
+    try:
+        chat = await bot.get_chat(query)
+    except TelegramAPIError as err:
+        await message.answer(
+            f"Не нашёл такой канал: {html.escape(str(err))}\n\n"
+            "Если канал закрытый — сначала добавь туда бота, иначе Telegram "
+            "его не покажет.",
+            reply_markup=kb.admin_back(),
+        )
+        return
+    #: Ссылку сохраняем сразу: на стене она нужна каждому непрошедшему, а
+    #: спрашивать её у Telegram на каждый показ — запрос на пустом месте.
+    link = chat.invite_link or (f"https://t.me/{chat.username}" if chat.username else None)
+    await db.add_channel(str(chat.id), chat.title or query, link)
+    subscribe.forget()
+    await state.clear()
+    warn = "" if await subscribe.status(bot, str(chat.id)) else (
+        "\n\n⚠️ Бот не администратор этого канала — подписчиков он не видит, "
+        "и проверка будет его пропускать. Выдай права и загляни сюда снова."
+    )
+    note = "" if link else (
+        "\n\nУ канала нет ссылки — на стене кнопка будет без перехода. "
+        "Сделай пригласительную ссылку или публичный юзернейм."
+    )
+    title = html.escape(chat.title or query)
+    await message.answer(f"✅ Канал <b>{title}</b> добавлен.{warn}{note}")
+    text, markup = await _gate_screen(bot)
+    await message.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("adm:gate:del:"))
+async def cb_gate_del(callback: CallbackQuery, bot: Bot) -> None:
+    removed = await db.remove_channel(callback.data[len("adm:gate:del:"):])
+    subscribe.forget()
+    text, markup = await _gate_screen(bot)
+    await callback.message.edit_text(text, reply_markup=markup)
+    await callback.answer("Канал убран" if removed else "Такого канала уже нет")
 
 
 @router.callback_query(F.data == "adm:history")

@@ -127,12 +127,21 @@ async def _send_asset(message: Message, name: str, caption: str, markup=None) ->
 
 @router.message(CommandStart())
 async def on_start(message: Message, command: CommandObject, state: FSMContext) -> None:
+    await start_flow(message, message.from_user, (command.args or "").strip(), state)
+
+
+async def start_flow(message: Message, user, payload: str, state: FSMContext) -> None:
+    """Приветствие и разбор реферального кода.
+
+    Вынесено из хендлера, потому что зайти сюда можно двумя дорогами:
+    обычной /start и возвратом со стены обязательной подписки. Во втором
+    случае реферальный код пришёл ещё до стены и ждал в состоянии — если
+    бы приветствие жило в хендлере, друг бы не засчитался.
+    """
     await state.clear()
-    user = message.from_user
     await db.touch_user(user.id, user.username, user.first_name or "")
     await db.mark_started(user.id)
 
-    payload = (command.args or "").strip()
     if payload.startswith("r") and payload[1:].isdigit():
         inviter_id = int(payload[1:])
         before = await db.get_user(user.id)

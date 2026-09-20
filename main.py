@@ -18,6 +18,7 @@ import config
 import db
 import frames
 import handlers
+import subscribe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,7 +41,16 @@ async def main() -> None:
     #: (там собирается рассылка), и встань она после общей — текст поста
     #: перехватывался бы обычным меню.
     dispatcher.include_router(admin.router)
+    dispatcher.include_router(subscribe.router)
     dispatcher.include_router(handlers.router)
+
+    #: Стена обязательной подписки. Middleware, а не проверка в каждом
+    #: хендлере: забытый хендлер — это дыра, через которую открыта вся
+    #: механика. Вешаем на внутренний слой, чтобы в data уже лежал FSM:
+    #: реферальный код из /start приходится сохранять до прохода стены.
+    gate = subscribe.Gate()
+    dispatcher.message.middleware(gate)
+    dispatcher.callback_query.middleware(gate)
 
     me = await bot.get_me()
     #: Юзернейм нужен для реферальных ссылок в каждом ответе, а дёргать
