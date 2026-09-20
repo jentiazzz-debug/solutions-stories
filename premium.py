@@ -54,6 +54,9 @@ HTML_METHODS = frozenset({
     "CopyMessage",
 })
 
+#: Клавиатура едет и там, где видимого текста нет совсем.
+TOUCHED = HTML_METHODS | {"EditMessageReplyMarkup", "SendInvoice"}
+
 #: Разрезаем строку по HTML-тегам: внутрь тега подмена лезть не должна,
 #: иначе эмодзи в атрибуте превратится в сломанную разметку.
 _TAG = re.compile(r"(<[^>]*>)")
@@ -82,12 +85,12 @@ ALIAS = {
     "🟢": "✅",
     "💸": "💰",
     "🧾": "📋",
-    "📨": "📣",
+    "📨": "📤",
     #: ↓ точного нет, взято близкое
     "✂️": "🪄",
     "💫": "⭐",
     "📘": "📄",
-    "🎉": "🎈",
+    "🎉": "✨",
     "👋": "✨",
     "🤝": "❤️",
     "🖼️": "🖼",
@@ -145,8 +148,47 @@ def decorate(text: str) -> str:
     return "".join(out)
 
 
+#: Эмодзи в начале подписи кнопки: именно его превращаем в иконку.
+_LEAD = re.compile(r"^(\S+)\s+(.+)$", re.DOTALL)
+
+
+def _button(button: Any) -> Any:
+    """Перенести эмодзи из подписи кнопки в её иконку.
+
+    У кнопок свой механизм: текст разметки не понимает, зато есть поле
+    icon_custom_emoji_id. Поэтому эмодзи из подписи вырезается и уезжает
+    в иконку — иначе рядом с премиальной иконкой остался бы и обычный
+    эмодзи, то есть два значка на одну кнопку.
+    """
+    text = getattr(button, "text", None)
+    if not isinstance(text, str) or getattr(button, "icon_custom_emoji_id", None):
+        return button
+    lead = _LEAD.match(text)
+    if not lead:
+        return button
+    head, tail = lead.group(1), lead.group(2)
+    custom_id = _map.get(head)
+    if not custom_id:
+        return button
+    return button.model_copy(update={"text": tail, "icon_custom_emoji_id": custom_id})
+
+
+def _keyboard(markup: Any) -> Any:
+    """Пройтись по всем кнопкам разметки. Не та разметка — вернуть как есть."""
+    for field in ("inline_keyboard", "keyboard"):
+        rows = getattr(markup, field, None)
+        if rows is None:
+            continue
+        fresh = [[_button(b) for b in row] for row in rows]
+        if fresh != rows:
+            return markup.model_copy(update={field: fresh})
+        return markup
+    return markup
+
+
 def _looks_like_emoji_refusal(err: TelegramBadRequest) -> bool:
-    return "emoji" in str(err).lower()
+    text = str(err).lower()
+    return "emoji" in text or "icon" in text
 
 
 class Premium:
@@ -161,11 +203,11 @@ class Premium:
         global _enabled
         if not _enabled or _pattern is None:
             return await make_request(bot, method)
-        if type(method).__name__ not in HTML_METHODS:
+        if type(method).__name__ not in TOUCHED:
             return await make_request(bot, method)
 
         before: list[tuple[str, Any]] = []
-        for field in FIELDS:
+        for field in FIELDS if type(method).__name__ in HTML_METHODS else ():
             value = getattr(method, field, None)
             if isinstance(value, str) and value:
                 decorated = decorate(value)
@@ -183,6 +225,13 @@ class Premium:
             if decorated != caption:
                 before.append(("media", media))
                 method.media = media.model_copy(update={"caption": decorated})
+
+        markup = getattr(method, "reply_markup", None)
+        if markup is not None:
+            fresh = _keyboard(markup)
+            if fresh is not markup:
+                before.append(("reply_markup", markup))
+                method.reply_markup = fresh
 
         if not before:
             return await make_request(bot, method)

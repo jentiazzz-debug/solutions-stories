@@ -74,7 +74,11 @@ def parts() -> InlineKeyboardMarkup:
 
 
 def confirm(parts_count: int, free: bool) -> InlineKeyboardMarkup:
-    label = "🎁 Нарезать бесплатно" if free else f"💫 Оплатить {config.PRICES[parts_count]}⭐"
+    #: «Оплатить 10 звёзд», а не «Оплатить 10⭐»: эмодзи в хвосте подписи
+    #: остаётся обычным — иконкой кнопки становится только первый.
+    price = config.PRICES[parts_count]
+    stars = texts.plural(price, "звезду", "звезды", "звёзд")
+    label = "🎁 Нарезать бесплатно" if free else f"💫 Оплатить {price} {stars}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=label, callback_data=f"go:{parts_count}")],
@@ -98,9 +102,12 @@ def carousel(kind: str, index: int, total: int,
     """
     rows = [
         [
-            InlineKeyboardButton(text="⬅️", callback_data=f"{kind}:prev"),
+            #: С подписью, а не голой стрелкой: иконка кнопки берётся из
+            #: эмодзи перед текстом, а у кнопки из одного эмодзи текста
+            #: нет — стрелка так и осталась бы обычной.
+            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{kind}:prev"),
             InlineKeyboardButton(text=f"{index}/{total}", callback_data="noop"),
-            InlineKeyboardButton(text="➡️", callback_data=f"{kind}:next"),
+            InlineKeyboardButton(text="➡️ Дальше", callback_data=f"{kind}:next"),
         ],
     ]
     if tint is not None:
@@ -166,9 +173,11 @@ def gate_panel(rows, on: bool, broken: set[str]) -> InlineKeyboardMarkup:
     """Админский список каналов: удалить, добавить, включить/выключить."""
     keys = []
     for row in rows:
-        mark = "⚠️ " if row["id"] in broken else ""
+        #: Пометка словами: второй эмодзи в подписи иконкой уже не станет
+        #: и торчал бы рядом с премиальной обычным значком.
+        mark = " (нет прав)" if row["id"] in broken else ""
         keys.append([InlineKeyboardButton(
-            text=f"❌ {mark}{row['title']}", callback_data=f"adm:gate:del:{row['id']}"
+            text=f"❌ {row['title']}{mark}", callback_data=f"adm:gate:del:{row['id']}"
         )])
     keys.append([InlineKeyboardButton(text="➕ Добавить канал",
                                       callback_data="adm:gate:add")])
