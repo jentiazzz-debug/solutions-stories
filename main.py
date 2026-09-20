@@ -18,6 +18,7 @@ import config
 import db
 import frames
 import handlers
+import premium
 import subscribe
 
 logging.basicConfig(
@@ -36,6 +37,16 @@ async def main() -> None:
         token=config.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    #: Премиум-эмодзи подставляются на выходе, в session middleware: так
+    #: тексты в исходниках остаются читаемыми, а бот шлёт их уже
+    #: оформленными. Пустой набор ничего не ломает — подмены просто нет.
+    loaded = premium.load()
+    if loaded:
+        bot.session.middleware(premium.Premium())
+        logger.info("премиум-эмодзи: %d", loaded)
+    else:
+        logger.info("премиум-эмодзи нет (%s) — шлём обычные", premium.PACK.name)
+
     dispatcher = Dispatcher()
     #: Админка идёт первой: её хендлеры ждут любое сообщение в личке
     #: (там собирается рассылка), и встань она после общей — текст поста
