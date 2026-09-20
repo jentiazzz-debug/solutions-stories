@@ -159,7 +159,7 @@ async def start_flow(message: Message, user, payload: str, state: FSMContext) ->
     await _send_asset(message, "welcome.jpg", texts.welcome_caption(), kb.welcome())
 
 
-@router.message(F.text == kb.ABOUT)
+@router.message(F.text.in_(kb.said(kb.ABOUT)))
 async def on_about(message: Message, state: FSMContext) -> None:
     await state.clear()
     await _personal_card(message, make_assets.personal_about, "about.jpg",
@@ -210,7 +210,7 @@ async def _personal_card(message: Message, build, asset: str, caption: str,
 
 
 @router.message(Command("help"))
-@router.message(F.text == kb.MANUAL)
+@router.message(F.text.in_(kb.said(kb.MANUAL)))
 async def on_manual(message: Message, state: FSMContext) -> None:
     await state.clear()
     await _personal_card(message, make_assets.personal_manual, "manual.jpg",
@@ -218,7 +218,7 @@ async def on_manual(message: Message, state: FSMContext) -> None:
     await _reward_inviter(message.bot, message.from_user.id)
 
 
-@router.message(F.text == kb.REFERRALS)
+@router.message(F.text.in_(kb.said(kb.REFERRALS)))
 async def on_referrals(message: Message, state: FSMContext, bot_username: str) -> None:
     await state.clear()
     user_id = message.from_user.id
@@ -239,7 +239,7 @@ async def on_referrals(message: Message, state: FSMContext, bot_username: str) -
 # --------------------------------------------------------------------------
 
 
-@router.message(F.text == kb.CUT)
+@router.message(F.text.in_(kb.said(kb.CUT)))
 async def on_cut(message: Message, state: FSMContext) -> None:
     await state.set_state(Cut.photo)
     await message.answer(texts.ask_photo())
@@ -407,7 +407,7 @@ async def _deliver_cut(message: Message, state: FSMContext, parts: int, paid: in
 # --------------------------------------------------------------------------
 
 
-@router.message(F.text == kb.FRAMES)
+@router.message(F.text.in_(kb.said(kb.FRAMES)))
 async def on_frames(message: Message, state: FSMContext) -> None:
     await state.clear()
     await _send_asset(message, "frames.jpg", texts.frames_intro(), kb.frames_start())

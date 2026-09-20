@@ -28,6 +28,20 @@ REFERRALS = "👥 Рефералы"
 MENU_BUTTONS = {CUT, FRAMES, MANUAL, ABOUT, REFERRALS}
 
 
+def said(label: str) -> set[str]:
+    """Как эта кнопка придёт обратно текстом — во всех вариантах.
+
+    Премиум-иконка собирается из первого эмодзи подписи, и сам эмодзи
+    из неё вырезается: Telegram присылает «Инструкция», а не «📘
+    Инструкция». Но если кастомные эмодзи боту не разрешены, подмена
+    выключается и подпись остаётся прежней. Совпасть нужно с обеими,
+    иначе меню молча перестаёт работать ровно там, где всё выглядит
+    нормально.
+    """
+    head, _, tail = label.partition(" ")
+    return {label, tail} if tail else {label}
+
+
 def menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
